@@ -545,10 +545,6 @@ npm start  # Starts React dev server with hot reload
 
 MIT
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
 ## Support
 
 For issues or questions, please open an issue on the repository.
