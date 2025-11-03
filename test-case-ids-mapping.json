@@ -1,0 +1,101 @@
+{
+  "metadata": {
+    "generatedDate": "2024-01-15T10:30:00Z",
+    "totalTestCases": 8,
+    "testPropertyName": "TestCaseId"
+  },
+  "testCases": [
+    {
+      "testName": "VerifySuccessfulLoginWithValidCredentials",
+      "className": "LoginTests",
+      "filePath": "tests/UI/Authentication/LoginTests.cs",
+      "fileName": "LoginTests.cs",
+      "testCaseId": "245678",
+      "categories": ["Smoke", "Regression"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyLoginFailsWithInvalidPassword",
+      "className": "LoginTests",
+      "filePath": "tests/UI/Authentication/LoginTests.cs",
+      "fileName": "LoginTests.cs",
+      "testCaseId": "245679",
+      "categories": ["Regression", "Negative"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyLoginFailsWithEmptyUsername",
+      "className": "LoginTests",
+      "filePath": "tests/UI/Authentication/LoginTests.cs",
+      "fileName": "LoginTests.cs",
+      "testCaseId": "245680",
+      "categories": ["Regression", "Validation"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyPasswordResetFunctionality",
+      "className": "LoginTests",
+      "filePath": "tests/UI/Authentication/LoginTests.cs",
+      "fileName": "LoginTests.cs",
+      "testCaseId": "12345",
+      "categories": ["Smoke", "Feature"],
+      "status": "active",
+      "note": "Already had TestCaseId attribute"
+    },
+    {
+      "testName": "VerifyUserCanCompleteCheckoutWithValidPayment",
+      "className": "CheckoutTests",
+      "filePath": "tests/UI/Ecommerce/CheckoutTests.cs",
+      "fileName": "CheckoutTests.cs",
+      "testCaseId": "245681",
+      "categories": ["Smoke", "E2E", "Payment"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyCheckoutFailsWithInvalidCreditCard",
+      "className": "CheckoutTests",
+      "filePath": "tests/UI/Ecommerce/CheckoutTests.cs",
+      "fileName": "CheckoutTests.cs",
+      "testCaseId": "245682",
+      "categories": ["Regression", "Negative", "Payment"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyOpenAIStatusEndpointReturnsConfiguredStatus",
+      "className": "ApiEndpointTests",
+      "filePath": "tests/API/ApiEndpointTests.cs",
+      "fileName": "ApiEndpointTests.cs",
+      "testCaseId": "245683",
+      "categories": ["Smoke", "API"],
+      "status": "active"
+    },
+    {
+      "testName": "VerifyScanEndpointReturnsTestFiles",
+      "className": "ApiEndpointTests",
+      "filePath": "tests/API/ApiEndpointTests.cs",
+      "fileName": "ApiEndpointTests.cs",
+      "testCaseId": "245684",
+      "categories": ["API", "Regression"],
+      "status": "active"
+    }
+  ],
+  "summary": {
+    "byClass": {
+      "LoginTests": 4,
+      "CheckoutTests": 2,
+      "ApiEndpointTests": 2
+    },
+    "byCategory": {
+      "Smoke": 3,
+      "Regression": 4,
+      "Negative": 2,
+      "Validation": 1,
+      "Feature": 1,
+      "E2E": 1,
+      "Payment": 2,
+      "API": 2
+    },
+    "filesUpdated": 3
+  }
+}
+
