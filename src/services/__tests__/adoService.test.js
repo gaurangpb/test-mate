@@ -1,6 +1,5 @@
 const ADOService = require('../adoService');
 const https = require('https');
-const { URL } = require('url');
 
 // Mock https module
 jest.mock('https');
