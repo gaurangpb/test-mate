@@ -146,7 +146,6 @@ describe('ADOService', () => {
         })
       };
 
-      let requestCount = 0;
       const mockRequest2 = {
         on: jest.fn((event, callback) => {
           if (event === 'response') {
