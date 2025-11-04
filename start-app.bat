@@ -50,6 +50,6 @@ echo Press Ctrl+C to stop both servers
 echo ========================================
 echo.
 
-REM Use npm script with concurrently (already configured in package.json)
+echo Running: npm run start:all
 call npm run start:all
 

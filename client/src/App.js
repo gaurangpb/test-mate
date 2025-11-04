@@ -20,6 +20,19 @@ async function mockFetch(url, options = {}) {
 		return createMockResponse({ configured: true });
 	}
 
+	if (url.endsWith('/config/ado/status')) {
+		return createMockResponse({ 
+			configured: true, 
+			config: {
+				organizationUrl: 'https://dev.azure.com/MockOrg',
+				projectName: 'MockProject',
+				testPlanId: '12345',
+				testSuiteId: '67890',
+				hasToken: true
+			}
+		});
+	}
+
 	if (url.endsWith('/scan') && options.method === 'POST') {
 		return createMockResponse({
 			results: [
@@ -98,12 +111,8 @@ async function mockFetch(url, options = {}) {
 	}
 
 	if (url.endsWith('/ado/create-test-cases') && options.method === 'POST') {
-		const body = options.body ? JSON.parse(options.body) : { testCases: [] };
-		const results = (body.testCases || []).map((tc, idx) => ({
-			testName: tc.testName,
-			testCaseId: `MOCK-${1000 + idx}`
-		}));
-		return createMockResponse({ results });
+		// Removed mock implementation - now uses real ADO API
+		return createMockResponse({ error: 'Mock route not implemented for ADO - using real API' }, false);
 	}
 
 	if (url.endsWith('/write-test-ids') && options.method === 'POST') {
@@ -117,7 +126,7 @@ async function mockFetch(url, options = {}) {
 		return createMockResponse({
 			success: true,
 			results: results,
-			message: `Successfully updated ${results.length} file(s) (Mock Mode)`
+			message: `Successfully updated ${results.length} file(s) with ADOTestCaseId properties (Mock Mode)`
 		});
 	}
 
@@ -135,7 +144,7 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('config');
   const [config, setConfig] = useState({
     repoPath: '',
-    testPropertyName: 'TestCaseId'
+    testPropertyName: 'ADOTestCaseId'
   });
   const [scanResults, setScanResults] = useState(null);
   const [selectedTests, setSelectedTests] = useState(new Set());
@@ -149,23 +158,45 @@ export default function App() {
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isWritingIds, setIsWritingIds] = useState(false);
   const [error, setError] = useState(null);
+  const [successMessage, setSuccessMessage] = useState(null);
   const [openAiConfigured, setOpenAiConfigured] = useState(false);
+  const [adoConfigured, setAdoConfigured] = useState(false);
+  const [adoConfig, setAdoConfig] = useState(null);
 
-  // Check OpenAI configuration status on mount
+  // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
-    const checkOpenAIStatus = async () => {
+    const checkConfigStatus = async () => {
       try {
-        const response = await apiFetch(`${API_BASE_URL}/config/openai/status`);
-        if (response.ok) {
-          const data = await response.json();
-          setOpenAiConfigured(data.configured);
+        // Check OpenAI status
+        const openaiResponse = await apiFetch(`${API_BASE_URL}/config/openai/status`);
+        if (openaiResponse.ok) {
+          const openaiData = await openaiResponse.json();
+          setOpenAiConfigured(openaiData.configured);
+        }
+
+        // Check ADO status
+        const adoResponse = await apiFetch(`${API_BASE_URL}/config/ado/status`);
+        if (adoResponse.ok) {
+          const adoData = await adoResponse.json();
+          setAdoConfigured(adoData.configured);
+          setAdoConfig(adoData.config);
         }
       } catch (err) {
-        console.error('Failed to check OpenAI status:', err);
+        console.error('Failed to check configuration status:', err);
       }
     };
-    checkOpenAIStatus();
+    checkConfigStatus();
   }, []);
+
+  // Auto-hide success message after 5 seconds
+  useEffect(() => {
+    if (successMessage) {
+      const timer = setTimeout(() => {
+        setSuccessMessage(null);
+      }, 5000);
+      return () => clearTimeout(timer);
+    }
+  }, [successMessage]);
 
   const handleScan = async () => {
     if (!config.repoPath) {
@@ -175,6 +206,7 @@ export default function App() {
 
     setIsScanning(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       const response = await apiFetch(`${API_BASE_URL}/scan`, {
@@ -195,7 +227,11 @@ export default function App() {
       setScanResults(data.results);
       
       if (data.results.length === 0) {
-        setError('No test files found without ADO test case IDs');
+        if (data.debug) {
+          setError(`${data.debug.message}${data.debug.suggestion ? '\n\nSuggestion: ' + data.debug.suggestion : ''}`);
+        } else {
+          setError('No test files found without ADO test case IDs');
+        }
       } else {
         setActiveTab('select');
       }
@@ -214,6 +250,7 @@ export default function App() {
 
     setIsAnalyzing(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       const response = await apiFetch(`${API_BASE_URL}/analyze`, {
@@ -248,6 +285,7 @@ export default function App() {
 
     setIsGenerating(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       // Collect selected test details
@@ -317,7 +355,7 @@ export default function App() {
   const handleExport = useCallback(() => {
     const output = Object.keys(generatedDocs).map(testName => {
       const testCaseId = createdTestCaseIds[testName] || 'PENDING_ADO_CREATION';
-      return `// Add this attribute to ${testName}:\n[TestProperty("${config.testPropertyName}", "${testCaseId}")]`;
+      return `// Add this attribute to ${testName}:\n[Property("${config.testPropertyName}", "${testCaseId}")]`;
     }).join('\n\n');
     
     const blob = new Blob([output], { type: 'text/plain' });
@@ -423,8 +461,14 @@ export default function App() {
   }, [editedSteps]);
 
   const handleCreateInAdo = async () => {
+    if (!adoConfigured) {
+      setError('Azure DevOps is not configured. Please set ADO configuration in your .env file.');
+      return;
+    }
+
     setIsCreatingInAdo(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       // Prepare test cases with documentation
@@ -472,12 +516,20 @@ export default function App() {
 
       const data = await response.json();
       
-      // Update created test case IDs
+      // Update created test case IDs (only for successful creations)
       const newIds = {};
       data.results.forEach(result => {
-        newIds[result.testName] = result.testCaseId;
+        if (result.success && result.testCaseId) {
+          newIds[result.testName] = result.testCaseId;
+        }
       });
       setCreatedTestCaseIds({ ...createdTestCaseIds, ...newIds });
+      
+      // Show warnings for any failures
+      if (data.errors && data.errors.length > 0) {
+        const errorMessages = data.errors.map(err => `${err.testName}: ${err.error}`).join('\n');
+        console.warn('Some test cases failed to create:', errorMessages);
+      }
       
     } catch (err) {
       setError(err.message);
@@ -494,6 +546,7 @@ export default function App() {
 
     setIsWritingIds(true);
     setError(null);
+    setSuccessMessage(null);
 
     try {
       // Map test names to file paths and collect IDs
@@ -545,7 +598,7 @@ export default function App() {
         // Show success message
         const successCount = data.results.filter(r => r.success).length;
         setError(null);
-        alert(`Successfully updated ${successCount} file(s) with test case IDs!`);
+        setSuccessMessage(`Successfully updated ${successCount} file(s) with test case IDs!`);
       } else {
         const failedFiles = data.results.filter(r => !r.success);
         if (failedFiles.length > 0) {
@@ -585,6 +638,27 @@ export default function App() {
               <button
                 onClick={() => setError(null)}
                 className="text-red-600 hover:text-red-800"
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Success Banner */}
+      {successMessage && (
+        <div className="max-w-7xl mx-auto px-6 pt-6">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+            <div className="flex gap-2">
+              <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />
+              <div className="flex-1">
+                <p className="text-sm text-green-800 font-medium">Success</p>
+                <p className="text-sm text-green-700 mt-1">{successMessage}</p>
+              </div>
+              <button
+                onClick={() => setSuccessMessage(null)}
+                className="text-green-600 hover:text-green-800"
               >
                 ×
               </button>
@@ -687,18 +761,52 @@ export default function App() {
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Azure DevOps Configuration
+                  </label>
+                  {adoConfigured ? (
+                    <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-green-50 border border-green-200">
+                      <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-green-800">Azure DevOps Configured</p>
+                        {adoConfig && (
+                          <div className="text-xs text-green-700 mt-1">
+                            <p>Organization: {adoConfig.organizationUrl}</p>
+                            <p>Project: {adoConfig.projectName}</p>
+                            <p>Test Plan: {adoConfig.testPlanId}, Suite: {adoConfig.testSuiteId}</p>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-yellow-50 border border-yellow-200">
+                      <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-yellow-800">Azure DevOps Not Configured</p>
+                        <p className="text-xs text-yellow-700 mt-1">
+                          Please set ADO_ORGANIZATION_URL, ADO_PROJECT_NAME, ADO_TEST_PLAN_ID, ADO_TEST_SUITE_ID, and ADO_PAT in your .env file
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
                     Test Property Name
                   </label>
-                  <input
-                    type="text"
-                    value={config.testPropertyName}
-                    onChange={(e) => setConfig({ ...config, testPropertyName: e.target.value })}
-                    placeholder="TestCaseId"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <p className="mt-1 text-sm text-gray-500">
-                    The attribute name used to store ADO test case IDs
-                  </p>
+                  <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-gray-50 border border-gray-200">
+                    <div className="flex-1">
+                      <p className="text-sm font-medium text-gray-900">{config.testPropertyName}</p>
+                      <p className="text-xs text-gray-500 mt-1">
+                        The attribute name used to store ADO test case IDs (configured)
+                      </p>
+                    </div>
+                    <div className="flex-shrink-0">
+                      <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded font-medium">
+                        Configured
+                      </span>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="flex gap-3 pt-4">
@@ -1005,7 +1113,7 @@ export default function App() {
                     </button>
                     <button
                       onClick={handleCreateInAdo}
-                      disabled={isCreatingInAdo}
+                      disabled={isCreatingInAdo || !adoConfigured}
                       className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
                     >
                       {isCreatingInAdo ? (
@@ -1124,11 +1232,11 @@ export default function App() {
                       <div className="pt-2 border-t border-gray-200">
                         {testCaseId ? (
                           <p className="text-xs text-gray-500 font-mono">
-                            {`[TestProperty("${config.testPropertyName}", "${testCaseId}")]`}
+                            {`[Property("${config.testPropertyName}", "${testCaseId}")]`}
                           </p>
                         ) : (
                           <p className="text-xs text-gray-500 font-mono">
-                            {`[TestProperty("${config.testPropertyName}", "PENDING_ADO_CREATION")]`}
+                            {`[Property("${config.testPropertyName}", "PENDING_ADO_CREATION")]`}
                           </p>
                         )}
                       </div>
@@ -1137,15 +1245,29 @@ export default function App() {
                   );
                 })}
 
+                {!adoConfigured && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4 mb-4">
+                    <div className="flex gap-2">
+                      <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm text-yellow-800 font-medium mb-1">Azure DevOps Not Configured</p>
+                        <p className="text-sm text-yellow-700">
+                          Configure ADO settings in your .env file to create test cases in Azure DevOps.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
                 {Object.keys(createdTestCaseIds).length === 0 ? (
                   <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                     <p className="text-sm text-blue-800 font-medium mb-2">Next Steps:</p>
                     <ol className="text-sm text-blue-700 space-y-1 list-decimal list-inside">
                       <li>Review and edit the generated documentation above if needed</li>
-                      <li>Ensure Azure DevOps configuration is set in your .env file</li>
+                      <li>{adoConfigured ? 'Azure DevOps is configured ✓' : 'Configure Azure DevOps settings in your .env file'}</li>
                       <li>Click "Create in ADO" to create test cases in Azure DevOps</li>
                       <li>Test case IDs will be displayed after successful creation</li>
-                      <li>Add the TestProperty attributes to your test methods with the actual ADO IDs</li>
+                      <li>Click "Write IDs to Files" to add ADOTestCaseId attributes to your test methods</li>
                     </ol>
                   </div>
                 ) : (
@@ -1157,7 +1279,7 @@ export default function App() {
                           Successfully created {Object.keys(createdTestCaseIds).length} test case(s) in ADO
                         </p>
                         <p className="text-sm text-green-700">
-                          Test case IDs are displayed above. You can now add the TestProperty attributes to your test methods.
+                          Test case IDs are displayed above. You can now add the ADOTestCaseId attributes to your test methods.
                         </p>
                       </div>
                     </div>
