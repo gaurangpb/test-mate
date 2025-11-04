@@ -31,13 +31,13 @@ class OpenAIService {
     this.client = new OpenAI({ apiKey });
   }
 
-  async generateDocumentationForTests(tests) {
+  async generateDocumentationForTests(tests, domainContext = null) {
     const documentationResults = [];
     
     for (const test of tests) {
       try {
         console.log(`Generating documentation for: ${test.name}`);
-        const docs = await this.generateDocumentation(test);
+        const docs = await this.generateDocumentation(test, domainContext);
         documentationResults.push({ name: test.name, docs });
         console.log(`Successfully generated documentation for: ${test.name}`);
       } catch (error) {
@@ -65,43 +65,39 @@ class OpenAIService {
     return generatedDocs;
   }
 
-  async generateDocumentation(test) {
+  async generateDocumentation(test, domainContext = null) {
     if (!this.client) {
       throw new Error('OpenAI client not configured');
     }
 
-    const prompt = `You are a QA documentation expert. Analyze this automated test code and generate comprehensive test documentation.
+    // Build prompt with optional domain context
+    let prompt = `You are a QA documentation expert. Analyze this automated test code and generate comprehensive test documentation.`;
 
-Test Method Name: ${test.name}
-
-Test Code:
-\`\`\`csharp
-${test.code}
-\`\`\`
-
-Please provide:
-
-1. A narrative description (2-3 sentences) explaining what business scenario this test validates. Focus on the user perspective and business value, not technical implementation details.
-
-2. Detailed test steps in the format of Action and Expected Result pairs. Each step should be clear and testable. Include steps for setup, execution, and verification.
-
-Return your response in this exact JSON format:
-{
-  "description": "Your narrative description here",
-  "steps": [
-    {
-      "action": "Action description",
-      "expectedResult": "Expected result description"
+    // Add domain context if provided
+    if (domainContext) {
+      prompt += `\n\n=== APPLICATION DOMAIN CONTEXT ===\nThe following information describes the application's domain, features, workflows, and terminology. Use this context to generate more accurate, domain-specific test documentation:\n\n${domainContext}\n\n=== END DOMAIN CONTEXT ===\n`;
     }
-  ]
-}
 
-Important guidelines:
-- Make the description business-focused and user-centric
-- Steps should be clear enough for manual testing if needed
-- Include verification steps based on assertions in the code
-- Keep technical jargon minimal in the description
-- Number of steps should match the logical flow of the test (typically 3-7 steps)`;
+    prompt += `\nTest Method Name: ${test.name}\n\nTest Code:\n\`\`\`csharp\n${test.code}\n\`\`\`\n\nPlease provide:\n\n1. A narrative description (2-3 sentences) explaining what business scenario this test validates. Focus on the user perspective and business value, not technical implementation details.`;
+
+    if (domainContext) {
+      prompt += ` Use the domain context provided above to ensure the description uses correct domain terminology and reflects actual user workflows.`;
+    }
+
+    prompt += `\n\n2. Detailed test steps in the format of Action and Expected Result pairs. Each step should be clear and testable. Include steps for setup, execution, and verification.`;
+
+    if (domainContext) {
+      prompt += ` Reference the domain context to ensure steps align with actual application workflows and use proper domain terminology.`;
+    }
+
+    prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "description": "Your narrative description here",\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:\n- Make the description business-focused and user-centric`;
+
+    if (domainContext) {
+      prompt += `\n- Use domain-specific terminology from the context provided above`;
+      prompt += `\n- Ensure test steps reflect actual user journeys and workflows described in the context`;
+    }
+
+    prompt += `\n- Steps should be clear enough for manual testing if needed\n- Include verification steps based on assertions in the code\n- Keep technical jargon minimal in the description\n- Number of steps should match the logical flow of the test (typically 3-7 steps)`;
 
     try {
       console.log(`Generating documentation for test: ${test.name}`);
@@ -159,6 +155,101 @@ Important guidelines:
             expectedResult: "Test should pass successfully"
           }
         ]
+      };
+    }
+  }
+
+  /**
+   * Analyze test code to extract domain concepts, terminology, and workflows
+   * that could be added to domain context file
+   * @param {Array} tests - Array of test objects with name and code
+   * @param {string} existingContext - Current domain context (if any)
+   * @returns {Promise<Object>} - Extracted domain concepts and suggestions
+   */
+  async extractDomainConcepts(tests, existingContext = null) {
+    if (!this.client) {
+      throw new Error('OpenAI client not configured');
+    }
+
+    // Prepare test code samples for analysis
+    const testSamples = tests.slice(0, 20).map(test => ({
+      name: test.name,
+      code: test.code.substring(0, 2000) // Limit code length
+    }));
+
+    let prompt = `You are a domain analysis expert. Analyze the following test code samples and extract domain-specific concepts that would be valuable for test documentation generation.
+
+Your task is to identify:
+1. **Domain Terminology**: Specialized terms, business entities, status values used in tests
+2. **Workflows**: User journeys and business processes reflected in the tests
+3. **Features**: Application features and modules being tested
+4. **Business Rules**: Constraints, validations, or rules implied by test logic
+5. **Relationships**: How different entities or features relate to each other
+
+Test Samples:
+${JSON.stringify(testSamples, null, 2)}`;
+
+    if (existingContext) {
+      prompt += `\n\n=== EXISTING DOMAIN CONTEXT ===\n${existingContext.substring(0, 3000)}\n=== END EXISTING CONTEXT ===\n\n`;
+      prompt += `Compare the test code with the existing domain context above. Identify:\n`;
+      prompt += `- **New Concepts**: Terminology, workflows, or features not in existing context\n`;
+      prompt += `- **Missing Information**: Details that should be added to existing sections\n`;
+      prompt += `- **Potential Updates**: Information that might be outdated or incomplete\n`;
+    } else {
+      prompt += `\n\nExtract all domain concepts that would be useful for creating comprehensive domain context.`;
+    }
+
+    prompt += `\n\nReturn your analysis in this exact JSON format:\n{\n  "newTerminology": [\n    {\n      "term": "Term name",\n      "definition": "What this term means in the domain",\n      "examples": ["example usage from tests"]\n    }\n  ],\n  "newWorkflows": [\n    {\n      "name": "Workflow name",\n      "description": "What this workflow does",\n      "steps": ["step1", "step2", "step3"],\n      "testEvidence": ["test names or code snippets that show this workflow"]\n    }\n  ],\n  "newFeatures": [\n    {\n      "name": "Feature name",\n      "description": "What this feature does",\n      "testEvidence": ["test names that test this feature"]\n    }\n  ],\n  "businessRules": [\n    {\n      "rule": "Rule description",\n      "testEvidence": ["test names that validate this rule"]\n    }\n  ],\n  "suggestedContextUpdates": "Formatted markdown text that could be added to domain context file",\n  "confidence": "high|medium|low - confidence in these suggestions"\n}`;
+
+    try {
+      console.log(`Extracting domain concepts from ${tests.length} test(s)`);
+      
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a domain analysis expert who extracts business concepts from test code. Always respond with valid JSON. Focus on domain-specific terminology and workflows that would help generate better test documentation.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.5, // Lower temperature for more consistent extraction
+        max_tokens: 2000,
+        response_format: { type: 'json_object' }
+      });
+
+      const content = response.choices[0].message.content;
+      console.log(`Domain concept extraction completed`);
+      
+      try {
+        const parsedContent = JSON.parse(content);
+        return parsedContent;
+      } catch (parseError) {
+        console.error(`JSON parse error in domain concept extraction:`, parseError);
+        console.error(`Raw content:`, content);
+        
+        return {
+          newTerminology: [],
+          newWorkflows: [],
+          newFeatures: [],
+          businessRules: [],
+          suggestedContextUpdates: 'Error parsing AI response. Please review test code manually.',
+          confidence: 'low'
+        };
+      }
+    } catch (error) {
+      console.error(`Error extracting domain concepts:`, error);
+      
+      return {
+        newTerminology: [],
+        newWorkflows: [],
+        newFeatures: [],
+        businessRules: [],
+        suggestedContextUpdates: `Error extracting domain concepts: ${error.message}`,
+        confidence: 'low'
       };
     }
   }
