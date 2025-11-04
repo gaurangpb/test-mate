@@ -1,6 +1,5 @@
 const ADOService = require('../adoService');
 const https = require('https');
-const { URL } = require('url');
 
 // Mock https module
 jest.mock('https');
@@ -147,7 +146,6 @@ describe('ADOService', () => {
         })
       };
 
-      let requestCount = 0;
       const mockRequest2 = {
         on: jest.fn((event, callback) => {
           if (event === 'response') {

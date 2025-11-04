@@ -1,7 +1,5 @@
 const FileParserService = require('../fileParserService');
 const fs = require('fs').promises;
-const path = require('path');
-
 // Mock fs module
 jest.mock('fs', () => ({
   promises: {

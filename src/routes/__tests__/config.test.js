@@ -164,7 +164,6 @@ describe('Config Routes', () => {
     });
 
     it('should configure OpenAI client successfully', async () => {
-      const OpenAI = require('openai');
       jest.mock('openai');
 
       const response = await request(app)
