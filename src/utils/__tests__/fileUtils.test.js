@@ -5,15 +5,12 @@ const path = require('path');
 
 // Mock fs modules
 jest.mock('fs', () => ({
+  ...jest.requireActual('fs'),
   promises: {
     readFile: jest.fn(),
     writeFile: jest.fn(),
     readdir: jest.fn()
-  }
-}));
-
-jest.mock('fs', () => ({
-  ...jest.requireActual('fs'),
+  },
   existsSync: jest.fn()
 }));
 
