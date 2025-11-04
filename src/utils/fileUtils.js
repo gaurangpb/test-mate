@@ -236,6 +236,47 @@ class FileUtils {
 
     return results;
   }
+
+  /**
+   * Read domain context file for AI documentation generation
+   * Supports multiple formats: .txt, .md, .json
+   * @param {string} contextFilePath - Path to domain context file
+   * @returns {Promise<string|null>} - Domain context content or null if file doesn't exist
+   */
+  async readDomainContext(contextFilePath) {
+    if (!contextFilePath) {
+      return null;
+    }
+
+    try {
+      const fullPath = path.resolve(contextFilePath);
+      
+      // Security check
+      if (!fsSync.existsSync(fullPath)) {
+        console.warn(`Domain context file not found: ${fullPath}`);
+        return null;
+      }
+
+      const content = await fs.readFile(fullPath, 'utf-8');
+      
+      // If it's a JSON file, try to parse and format it nicely
+      if (fullPath.endsWith('.json')) {
+        try {
+          const jsonData = JSON.parse(content);
+          // Format JSON as readable text for AI
+          return JSON.stringify(jsonData, null, 2);
+        } catch (parseError) {
+          console.warn('Domain context JSON file is not valid JSON, using as plain text');
+          return content;
+        }
+      }
+
+      return content;
+    } catch (error) {
+      console.error(`Error reading domain context file: ${error.message}`);
+      return null;
+    }
+  }
 }
 
 module.exports = FileUtils;

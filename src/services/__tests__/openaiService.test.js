@@ -219,5 +219,288 @@ describe('OpenAIService', () => {
       expect(result.Test2.description).toContain('Documentation generation failed');
     });
   });
+
+  describe('extractDomainConcepts', () => {
+    beforeEach(() => {
+      process.env.OPENAI_API_KEY = 'test-key';
+      openaiService = new OpenAIService();
+    });
+
+    it('should throw error when client is not configured', async () => {
+      openaiService.client = null;
+      await expect(openaiService.extractDomainConcepts([{ name: 'Test', code: 'code' }]))
+        .rejects.toThrow('OpenAI client not configured');
+    });
+
+    it('should extract domain concepts successfully', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              newTerminology: [
+                {
+                  term: 'Order Status',
+                  definition: 'Status of an order in the system',
+                  examples: ['Pending', 'Processing']
+                }
+              ],
+              newWorkflows: [
+                {
+                  name: 'Order Fulfillment',
+                  description: 'Process of fulfilling orders',
+                  steps: ['Step 1', 'Step 2'],
+                  testEvidence: ['TestOrder']
+                }
+              ],
+              newFeatures: [
+                {
+                  name: 'Payment Processing',
+                  description: 'Feature for processing payments',
+                  testEvidence: ['TestPayment']
+                }
+              ],
+              businessRules: [
+                {
+                  rule: 'Orders over $100 require approval',
+                  testEvidence: ['TestOrderApproval']
+                }
+              ],
+              suggestedContextUpdates: '## New Terminology\n\n- Order Status...',
+              confidence: 'high'
+            })
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const tests = [
+        { name: 'TestOrder', code: 'public void TestOrder() { /* order code */ }' }
+      ];
+
+      const result = await openaiService.extractDomainConcepts(tests);
+
+      expect(result).toEqual({
+        newTerminology: [
+          {
+            term: 'Order Status',
+            definition: 'Status of an order in the system',
+            examples: ['Pending', 'Processing']
+          }
+        ],
+        newWorkflows: [
+          {
+            name: 'Order Fulfillment',
+            description: 'Process of fulfilling orders',
+            steps: ['Step 1', 'Step 2'],
+            testEvidence: ['TestOrder']
+          }
+        ],
+        newFeatures: [
+          {
+            name: 'Payment Processing',
+            description: 'Feature for processing payments',
+            testEvidence: ['TestPayment']
+          }
+        ],
+        businessRules: [
+          {
+            rule: 'Orders over $100 require approval',
+            testEvidence: ['TestOrderApproval']
+          }
+        ],
+        suggestedContextUpdates: '## New Terminology\n\n- Order Status...',
+        confidence: 'high'
+      });
+
+      expect(mockClient.chat.completions.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          model: 'gpt-4o-mini',
+          temperature: 0.5,
+          response_format: { type: 'json_object' }
+        })
+      );
+    });
+
+    it('should include existing context when provided', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              newTerminology: [],
+              newWorkflows: [],
+              newFeatures: [],
+              businessRules: [],
+              suggestedContextUpdates: '',
+              confidence: 'high'
+            })
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const tests = [{ name: 'Test1', code: 'code' }];
+      const existingContext = '## Domain Context\n\nExisting terminology...';
+
+      await openaiService.extractDomainConcepts(tests, existingContext);
+
+      const callArgs = mockClient.chat.completions.create.mock.calls[0][0];
+      const userMessage = callArgs.messages.find(m => m.role === 'user').content;
+
+      expect(userMessage).toContain('EXISTING DOMAIN CONTEXT');
+      expect(userMessage).toContain('Existing terminology');
+    });
+
+    it('should limit test samples to 20', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              newTerminology: [],
+              newWorkflows: [],
+              newFeatures: [],
+              businessRules: [],
+              suggestedContextUpdates: '',
+              confidence: 'low'
+            })
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const tests = Array.from({ length: 25 }, (_, i) => ({
+        name: `Test${i}`,
+        code: `public void Test${i}() { /* code */ }`
+      }));
+
+      await openaiService.extractDomainConcepts(tests);
+
+      const callArgs = mockClient.chat.completions.create.mock.calls[0][0];
+      const userMessage = callArgs.messages.find(m => m.role === 'user').content;
+      
+      // More robust parsing - find the JSON array after "Test Samples:"
+      const match = userMessage.match(/Test Samples:\s*(\[[\s\S]*?\])/);
+      expect(match).toBeTruthy();
+      const testSamples = JSON.parse(match[1]);
+
+      expect(testSamples.length).toBe(20);
+    });
+
+    it('should truncate test code to 2000 characters', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              newTerminology: [],
+              newWorkflows: [],
+              newFeatures: [],
+              businessRules: [],
+              suggestedContextUpdates: '',
+              confidence: 'low'
+            })
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const longCode = 'x'.repeat(3000);
+      const tests = [{ name: 'Test1', code: longCode }];
+
+      await openaiService.extractDomainConcepts(tests);
+
+      const callArgs = mockClient.chat.completions.create.mock.calls[0][0];
+      const userMessage = callArgs.messages.find(m => m.role === 'user').content;
+      
+      // More robust parsing
+      const match = userMessage.match(/Test Samples:\s*(\[[\s\S]*?\])/);
+      expect(match).toBeTruthy();
+      const testSamples = JSON.parse(match[1]);
+
+      expect(testSamples[0].code.length).toBe(2000);
+    });
+
+    it('should handle JSON parse errors gracefully', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: 'Invalid JSON response'
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const tests = [{ name: 'Test1', code: 'code' }];
+      const result = await openaiService.extractDomainConcepts(tests);
+
+      expect(result).toEqual({
+        newTerminology: [],
+        newWorkflows: [],
+        newFeatures: [],
+        businessRules: [],
+        suggestedContextUpdates: 'Error parsing AI response. Please review test code manually.',
+        confidence: 'low'
+      });
+    });
+
+    it('should handle API errors gracefully', async () => {
+      const error = new Error('API Error');
+      mockClient.chat.completions.create.mockRejectedValue(error);
+
+      const tests = [{ name: 'Test1', code: 'code' }];
+      const result = await openaiService.extractDomainConcepts(tests);
+
+      expect(result).toEqual({
+        newTerminology: [],
+        newWorkflows: [],
+        newFeatures: [],
+        businessRules: [],
+        suggestedContextUpdates: 'Error extracting domain concepts: API Error',
+        confidence: 'low'
+      });
+    });
+
+    it('should truncate existing context to 3000 characters', async () => {
+      const mockResponse = {
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              newTerminology: [],
+              newWorkflows: [],
+              newFeatures: [],
+              businessRules: [],
+              suggestedContextUpdates: '',
+              confidence: 'low'
+            })
+          }
+        }]
+      };
+
+      mockClient.chat.completions.create.mockResolvedValue(mockResponse);
+
+      const longContext = 'x'.repeat(5000);
+      const tests = [{ name: 'Test1', code: 'code' }];
+
+      await openaiService.extractDomainConcepts(tests, longContext);
+
+      const callArgs = mockClient.chat.completions.create.mock.calls[0][0];
+      const userMessage = callArgs.messages.find(m => m.role === 'user').content;
+      
+      // Check that context is included and truncated
+      expect(userMessage).toContain('=== EXISTING DOMAIN CONTEXT ===');
+      expect(userMessage).toContain('=== END EXISTING CONTEXT ===');
+      
+      // Extract context between markers (non-greedy match)
+      const contextMatch = userMessage.match(/=== EXISTING DOMAIN CONTEXT ===\s*([\s\S]*?)\s*=== END EXISTING CONTEXT ===/);
+      
+      expect(contextMatch).toBeTruthy();
+      if (contextMatch && contextMatch[1]) {
+        expect(contextMatch[1].length).toBe(3000);
+      }
+    });
+  });
 });
 

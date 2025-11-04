@@ -13,6 +13,7 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
 - **📝 Documentation Generation**: Uses OpenAI to generate business-focused test documentation with:
   - Narrative descriptions
   - Detailed test steps (Action/Expected Result pairs)
+  - **🎯 Domain Context Support**: Optional domain context files for enhanced, domain-specific documentation
 - **🏷️ Category & Tag Support**: Extracts and reports on:
   - Method-level categories: `[Category("Smoke")]`
   - Class-level categories: `[TestFixture, Category("Integration")]`
@@ -116,6 +117,7 @@ start-app.bat
    - Enter the path to your test repository (e.g., `C:\Projects\MyTestAutomation\tests`)
    - Configure OpenAI API key (or ensure it's set in `.env`)
    - Set the TestProperty name (default: `TestCaseId`)
+   - (Optional) Specify path to domain context file for enhanced documentation generation
 
    - Click "Analyze Repository" to get comprehensive statistics (recommended first step)
    - Click "Scan for Missing IDs" to find tests without ADO IDs
@@ -152,6 +154,35 @@ The typical workflow for documenting tests and integrating with Azure DevOps:
 6. **Review & Edit** → Refine test steps if needed
 7. **Create in ADO** → Create test cases in Azure DevOps (gets test case IDs)
 8. **Write IDs** → Automatically add TestProperty attributes to source files
+
+## Domain Context for Enhanced Documentation
+
+TestMate supports optional domain context files to generate more accurate, domain-specific test documentation. When provided, the AI uses your application's terminology, workflows, and business rules to create better documentation.
+
+### Creating a Domain Context File
+
+Create a domain context file (`.txt`, `.md`, or `.json`) containing:
+- **Domain Terminology**: Key terms and concepts specific to your application
+- **Features & Modules**: Core features and their purposes
+- **User Journeys**: Typical workflows and user paths
+- **Business Rules**: Important constraints and validation rules
+- **Integration Points**: External systems and their interactions
+
+See `domain-context-example.md` for a complete template.
+
+### Using Domain Context
+
+1. Create your domain context file (e.g., `domain-context.md`)
+2. In the Configuration tab, enter the path to your domain context file
+3. Generate documentation as usual - the AI will automatically use the context
+
+**Benefits:**
+- More accurate domain-specific terminology
+- Test steps that reflect actual user workflows
+- Better understanding of business context
+- Consistent documentation across your test suite
+
+**Note:** Domain context is optional. If not provided, TestMate will generate documentation based on test code alone.
 
 ## Supported Test File Structure
 
@@ -274,9 +305,12 @@ Generates documentation for selected tests using OpenAI.
       "code": "// test code",
       "fileName": "LoginTests.cs"
     }
-  ]
+  ],
+  "domainContextPath": "C:\\Projects\\MyApp\\domain-context.md"
 }
 ```
+
+**Note:** `domainContextPath` is optional. If provided, the domain context file will be loaded and used to enhance documentation generation.
 
 **Response:**
 
@@ -292,9 +326,12 @@ Generates documentation for selected tests using OpenAI.
         }
       ]
     }
-  }
+  },
+  "usedDomainContext": true
 }
 ```
+
+**Note:** `usedDomainContext` indicates whether domain context was successfully loaded and used.
 
 ### `GET /api/config/openai/status`
 

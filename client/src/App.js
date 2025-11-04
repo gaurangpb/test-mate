@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag } from 'lucide-react';
+import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag, Lightbulb, Plus } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:3001/api';
 const USE_MOCK = process.env.REACT_APP_USE_MOCK === 'true';
@@ -144,7 +144,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('config');
   const [config, setConfig] = useState({
     repoPath: '',
-    testPropertyName: 'ADOTestCaseId'
+    testPropertyName: 'ADOTestCaseId',
+    domainContextPath: ''
   });
   const [scanResults, setScanResults] = useState(null);
   const [selectedTests, setSelectedTests] = useState(new Set());
@@ -157,11 +158,13 @@ export default function App() {
   const [isCreatingInAdo, setIsCreatingInAdo] = useState(false);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isWritingIds, setIsWritingIds] = useState(false);
+  const [isAnalyzingContext, setIsAnalyzingContext] = useState(false);
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
   const [openAiConfigured, setOpenAiConfigured] = useState(false);
   const [adoConfigured, setAdoConfigured] = useState(false);
   const [adoConfig, setAdoConfig] = useState(null);
+  const [contextSuggestions, setContextSuggestions] = useState(null);
 
   // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
@@ -277,6 +280,48 @@ export default function App() {
     }
   };
 
+  const handleSuggestContextUpdates = async () => {
+    if (!config.repoPath) {
+      setError('Please enter a repository path');
+      return;
+    }
+
+    if (!openAiConfigured) {
+      setError('Please configure OpenAI API key first');
+      return;
+    }
+
+    setIsAnalyzingContext(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/suggest-context-updates`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: config.repoPath,
+          domainContextPath: config.domainContextPath || null,
+          testPropertyName: config.testPropertyName,
+          limit: 50
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to analyze context updates');
+      }
+
+      const data = await response.json();
+      setContextSuggestions(data);
+      setSuccessMessage(`Analyzed ${data.analysisSummary.testsAnalyzed} tests and found ${data.suggestions.newTerminology.length + data.suggestions.newWorkflows.length + data.suggestions.newFeatures.length} new concepts`);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsAnalyzingContext(false);
+    }
+  };
+
   const handleGenerate = async () => {
     if (!openAiConfigured) {
       setError('Please configure OpenAI API key first');
@@ -305,7 +350,10 @@ export default function App() {
       const response = await apiFetch(`${API_BASE_URL}/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ tests: testsToGenerate })
+        body: JSON.stringify({ 
+          tests: testsToGenerate,
+          domainContextPath: config.domainContextPath || null
+        })
       });
 
       if (!response.ok) {
@@ -315,6 +363,9 @@ export default function App() {
 
       const data = await response.json();
       setGeneratedDocs(data.generatedDocs);
+      if (data.usedDomainContext) {
+        setSuccessMessage('Documentation generated with domain context!');
+      }
       setActiveTab('review');
     } catch (err) {
       setError(err.message);
@@ -809,12 +860,37 @@ export default function App() {
                   </div>
                 </div>
 
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Domain Context File (Optional)
+                  </label>
+                  <input
+                    type="text"
+                    value={config.domainContextPath}
+                    onChange={(e) => setConfig({ ...config, domainContextPath: e.target.value })}
+                    placeholder="C:\Projects\MyApp\domain-context.md"
+                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                  />
+                  <p className="mt-1 text-sm text-gray-500">
+                    Path to a file containing domain context (features, workflows, terminology). 
+                    Supports .txt, .md, or .json formats. This helps AI generate more accurate, domain-specific test documentation.
+                  </p>
+                  {config.domainContextPath && (
+                    <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
+                      <FileText className="w-4 h-4 text-blue-600" />
+                      <p className="text-xs text-blue-800">
+                        Domain context will be used to enhance documentation generation
+                      </p>
+                    </div>
+                  )}
+                </div>
+
                 <div className="flex gap-3 pt-4">
-                  <button
-                    onClick={handleAnalyze}
-                    disabled={!config.repoPath || isAnalyzing}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                  >
+              <button
+                onClick={handleAnalyze}
+                disabled={!config.repoPath || isAnalyzing}
+                className="flex items-center gap-2 px-6 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+              >
                     {isAnalyzing ? (
                       <>
                         <Loader2 className="w-4 h-4 animate-spin" />
@@ -844,6 +920,23 @@ export default function App() {
                       </>
                     )}
                   </button>
+                  <button
+                    onClick={handleSuggestContextUpdates}
+                    disabled={!config.repoPath || isAnalyzingContext || !openAiConfigured}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    {isAnalyzingContext ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <Lightbulb className="w-4 h-4" />
+                        Suggest Context Updates
+                      </>
+                    )}
+                  </button>
                 </div>
 
                 {isScanning && (
@@ -851,6 +944,118 @@ export default function App() {
                     <p className="text-sm text-blue-800">
                       Scanning for tests without ADO test case IDs...
                     </p>
+                  </div>
+                )}
+
+                {/* Context Suggestions Display */}
+                {contextSuggestions && (
+                  <div className="border border-amber-200 rounded-lg overflow-hidden mt-6">
+                    <div className="bg-amber-50 px-4 py-3 border-b border-amber-200">
+                      <div className="flex items-center justify-between">
+                        <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                          <Lightbulb className="w-5 h-5 text-amber-600" />
+                          Domain Context Suggestions
+                        </h3>
+                        <span className={`px-2 py-1 text-xs rounded font-medium ${
+                          contextSuggestions.suggestions.confidence === 'high' ? 'bg-green-100 text-green-700' :
+                          contextSuggestions.suggestions.confidence === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                          'bg-gray-100 text-gray-700'
+                        }`}>
+                          {contextSuggestions.suggestions.confidence} confidence
+                        </span>
+                      </div>
+                      <p className="text-xs text-gray-600 mt-1">
+                        Analyzed {contextSuggestions.analysisSummary.testsAnalyzed} tests from {contextSuggestions.analysisSummary.filesAnalyzed} files
+                      </p>
+                    </div>
+                    <div className="p-4 space-y-4 max-h-96 overflow-y-auto">
+                      {contextSuggestions.suggestions.newTerminology.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-2">New Terminology ({contextSuggestions.suggestions.newTerminology.length})</h4>
+                          <div className="space-y-2">
+                            {contextSuggestions.suggestions.newTerminology.map((term, idx) => (
+                              <div key={idx} className="bg-gray-50 p-3 rounded border border-gray-200">
+                                <p className="font-medium text-gray-900">{term.term}</p>
+                                <p className="text-sm text-gray-600 mt-1">{term.definition}</p>
+                                {term.examples && term.examples.length > 0 && (
+                                  <p className="text-xs text-gray-500 mt-1">Examples: {term.examples.join(', ')}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {contextSuggestions.suggestions.newWorkflows.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-2">New Workflows ({contextSuggestions.suggestions.newWorkflows.length})</h4>
+                          <div className="space-y-2">
+                            {contextSuggestions.suggestions.newWorkflows.map((workflow, idx) => (
+                              <div key={idx} className="bg-gray-50 p-3 rounded border border-gray-200">
+                                <p className="font-medium text-gray-900">{workflow.name}</p>
+                                <p className="text-sm text-gray-600 mt-1">{workflow.description}</p>
+                                {workflow.steps && workflow.steps.length > 0 && (
+                                  <ol className="text-xs text-gray-500 mt-2 list-decimal list-inside">
+                                    {workflow.steps.map((step, stepIdx) => (
+                                      <li key={stepIdx}>{step}</li>
+                                    ))}
+                                  </ol>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {contextSuggestions.suggestions.newFeatures.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-2">New Features ({contextSuggestions.suggestions.newFeatures.length})</h4>
+                          <div className="space-y-2">
+                            {contextSuggestions.suggestions.newFeatures.map((feature, idx) => (
+                              <div key={idx} className="bg-gray-50 p-3 rounded border border-gray-200">
+                                <p className="font-medium text-gray-900">{feature.name}</p>
+                                <p className="text-sm text-gray-600 mt-1">{feature.description}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {contextSuggestions.suggestions.businessRules.length > 0 && (
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-2">Business Rules ({contextSuggestions.suggestions.businessRules.length})</h4>
+                          <div className="space-y-2">
+                            {contextSuggestions.suggestions.businessRules.map((rule, idx) => (
+                              <div key={idx} className="bg-gray-50 p-3 rounded border border-gray-200">
+                                <p className="text-sm text-gray-700">{rule.rule}</p>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+
+                      {contextSuggestions.suggestions.suggestedContextUpdates && (
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-2">Suggested Context Updates</h4>
+                          <div className="bg-gray-50 p-3 rounded border border-gray-200">
+                            <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono">
+                              {contextSuggestions.suggestions.suggestedContextUpdates}
+                            </pre>
+                          </div>
+                        </div>
+                      )}
+
+                      {contextSuggestions.suggestions.newTerminology.length === 0 && 
+                       contextSuggestions.suggestions.newWorkflows.length === 0 && 
+                       contextSuggestions.suggestions.newFeatures.length === 0 && 
+                       contextSuggestions.suggestions.businessRules.length === 0 && (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                          <p className="text-sm text-green-800">
+                            ✓ No new domain concepts found. Your domain context file appears to be up-to-date!
+                          </p>
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
               </div>
