@@ -64,3 +64,4 @@ Desktop.ini
 test-results/
 playwright-report/
 
+/web-tests

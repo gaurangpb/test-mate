@@ -671,7 +671,10 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-6 py-4">
           <div className="flex items-center gap-3">
             <FileText className="w-8 h-8 text-blue-600" />
-            <h1 className="text-2xl font-bold text-gray-900">Test Documentation Generator</h1>
+            <div>
+              <h1 className="text-2xl font-bold text-gray-900">Test-Mate</h1>
+              <p className="text-sm text-gray-600">AI-driven QA assistant</p>
+            </div>
           </div>
         </div>
       </div>
