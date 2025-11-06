@@ -15,7 +15,7 @@ class FileParserService {
     this.CATEGORY_PATTERN = /\[Category\s*\(\s*["']([^"']+)["']/gi;
     this.TAG_PATTERN = /\[Tag\s*\(\s*["']([^"']+)["']/gi;
     this.BEFORE_CLASS_ATTR_PATTERN = /(\[Category\s*\([^\]]+\)\s*)+\[TestFixture/;
-    this.TEST_ATTRIBUTE_PATTERN = /(?:^|\n)\s*\[Test(?:\s*,|\s*\])/gm;
+    this.TEST_ATTRIBUTE_PATTERN = /(?:^|\n)\s*\[(?:Test|TestCase)(?:\s*,|\s*\]|\s*\()/gm;
     this.METHOD_SIGNATURE_PATTERN = /(public\s+(?:async\s+Task\s+|Task\s+|void\s+)(\w+)\s*\([^\)]*\))/;
     this.EXCLUDED_METHODS = new Set(['Setup', 'TearDown', 'SetUp', 'OneTimeSetUp', 'OneTimeTearDown']);
   }
@@ -331,7 +331,40 @@ class FileParserService {
       const testAttrStart = testAttrIndex;
       const methodStart = testAttrIndex + testMatch[0].length + methodMatch.index;
       
-      const searchStart = Math.max(0, testAttrStart - 1000);
+      // To prevent picking up ADO IDs from previous tests while still allowing class-level attributes,
+      // we need to find the boundary between the previous method and current test
+      let searchStart = 0;
+      
+      // Strategy: Look for the last method closing brace before this test
+      // If found, start after it. If not found, include class-level attributes.
+      const textBeforeTest = cleanContent.substring(0, testAttrStart);
+      
+      // Find all closing braces and their positions
+      const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
+      let lastMethodEnd = -1;
+      let match;
+      
+      // Find all method end positions in the text before this test
+      while ((match = methodPattern.exec(textBeforeTest)) !== null) {
+        lastMethodEnd = match.index + match[0].length;
+      }
+      
+      if (lastMethodEnd > -1) {
+        // Start searching after the last method
+        searchStart = lastMethodEnd;
+      } else {
+        // No previous method found, so we can safely include class-level attributes
+        // Look for the class definition start
+        const classMatch = textBeforeTest.match(/class\s+\w+[^{]*\{/);
+        if (classMatch) {
+          const classStart = textBeforeTest.lastIndexOf(classMatch[0]);
+          // Start searching from before the class to include class-level attributes
+          const beforeClass = textBeforeTest.substring(0, classStart);
+          const lastBraceBeforeClass = beforeClass.lastIndexOf('}');
+          searchStart = lastBraceBeforeClass > -1 ? lastBraceBeforeClass + 1 : 0;
+        }
+      }
+      
       const methodLineEnd = cleanContent.indexOf('\n', methodStart);
       const methodSignature = methodMatch[0];
       const searchEnd = methodLineEnd > -1 ? methodLineEnd : methodStart + methodSignature.length;

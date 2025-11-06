@@ -92,6 +92,49 @@ describe('ADO Routes', () => {
       expect(response.body.message).toContain('Successfully created');
     });
 
+    it('should pass addTags parameter to service when provided', async () => {
+      process.env.ADO_ORGANIZATION_URL = 'https://dev.azure.com/test';
+      process.env.ADO_PROJECT_NAME = 'TestProject';
+      process.env.ADO_TEST_PLAN_ID = '123';
+      process.env.ADO_TEST_SUITE_ID = '456';
+      process.env.ADO_PAT = 'test-pat';
+
+      const mockResults = [
+        {
+          testName: 'Test1',
+          fileName: 'Test1.cs',
+          filePath: '/path/to/Test1.cs',
+          testCaseId: '789',
+          success: true
+        }
+      ];
+
+      app.locals.adoService.createTestCases.mockResolvedValue(mockResults);
+
+      const response = await request(app)
+        .post('/api/ado/create-test-cases')
+        .send({
+          testCases: [
+            {
+              testName: 'Test1',
+              fileName: 'Test1.cs',
+              filePath: '/path/to/Test1.cs',
+              steps: []
+            }
+          ],
+          addTags: true
+        })
+        .expect(200);
+
+      expect(response.body.success).toBe(true);
+      expect(response.body.results).toEqual(mockResults);
+      expect(app.locals.adoService.createTestCases).toHaveBeenCalledWith(
+        expect.any(Array),
+        expect.any(Object),
+        true
+      );
+    });
+
     it('should generate mapping file when requested', async () => {
       process.env.ADO_ORGANIZATION_URL = 'https://dev.azure.com/test';
       process.env.ADO_PROJECT_NAME = 'TestProject';
