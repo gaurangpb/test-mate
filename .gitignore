@@ -2,6 +2,7 @@
 node_modules/
 /.pnp
 .pnp.js
+package-lock.json
 
 # Testing
 /coverage
@@ -10,6 +11,7 @@ node_modules/
 # Production
 /build
 /dist
+client/build/
 
 # Environment variables
 .env
