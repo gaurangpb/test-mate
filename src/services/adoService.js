@@ -64,14 +64,14 @@ class ADOService {
     });
   }
 
-  async createTestCases(testCases, adoConfig) {
+  async createTestCases(testCases, adoConfig, addTags = false) {
     const results = [];
 
     for (const testCase of testCases) {
       try {
         console.log(`Creating test case for: ${testCase.testName}`);
         
-        const testCaseId = await this.createTestCaseInADO(testCase, adoConfig);
+        const testCaseId = await this.createTestCaseInADO(testCase, adoConfig, addTags);
         
         results.push({
           testName: testCase.testName,
@@ -99,7 +99,7 @@ class ADOService {
     return results;
   }
 
-  async createTestCaseInADO(testCase, adoConfig) {
+  async createTestCaseInADO(testCase, adoConfig, addTags = false) {
     return new Promise((resolve, reject) => {
       try {
         // Format the test steps for ADO
@@ -143,6 +143,15 @@ class ADOService {
             "value": `<steps id="0" last="${lastStepId}">${formattedSteps}</steps>`
           }
         ];
+
+        // Add tags if requested
+        if (addTags) {
+          workItemData.push({
+            "op": "add",
+            "path": "/fields/System.Tags",
+            "value": "BTAF_Automation"
+          });
+        }
 
         const requestBody = JSON.stringify(workItemData);
         

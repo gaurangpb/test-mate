@@ -164,7 +164,8 @@ describe('Files Routes', () => {
       expect(response.body).toEqual({
         success: true,
         results: mockResults,
-        message: 'Successfully updated 1 file(s)'
+        message: 'Successfully updated 1 file(s)',
+        needsReview: false
       });
     });
 

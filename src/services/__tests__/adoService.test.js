@@ -188,6 +188,69 @@ describe('ADOService', () => {
       }).catch(done);
     });
 
+    it('should create test cases with tags when addTags is true', (done) => {
+      const mockResponse = {
+        statusCode: 201,
+        on: jest.fn((event, callback) => {
+          if (event === 'data') {
+            setImmediate(() => callback(Buffer.from(JSON.stringify({ id: '789' }))));
+          } else if (event === 'end') {
+            setImmediate(() => callback());
+          }
+        })
+      };
+
+      // Mock suite addition response
+      const mockSuiteResponse = {
+        statusCode: 200,
+        on: jest.fn((event, callback) => {
+          if (event === 'data') {
+            setImmediate(() => callback(Buffer.from('')));
+          } else if (event === 'end') {
+            setImmediate(() => callback());
+          }
+        })
+      };
+
+      https.request.mockImplementation((options, responseCallback) => {
+        // First call is for creating test case
+        if (options.path.includes('_apis/wit/workitems/')) {
+          process.nextTick(() => responseCallback(mockResponse));
+          return mockRequest;
+        } else {
+          // Second call is for adding to suite
+          process.nextTick(() => responseCallback(mockSuiteResponse));
+          return mockRequest2;
+        }
+      });
+
+      const testCases = [
+        {
+          testName: 'Test1',
+          fileName: 'Test1.cs',
+          filePath: '/path/to/Test1.cs',
+          steps: [
+            { action: 'Action 1', expectedResult: 'Result 1' }
+          ]
+        }
+      ];
+
+      adoService.createTestCases(testCases, mockConfig, true).then((results) => {
+        expect(results).toHaveLength(1);
+        expect(results[0].success).toBe(true);
+        expect(results[0].testCaseId).toBe('789');
+        
+        // Verify that the request was made with tags
+        expect(mockRequest.write).toHaveBeenCalledWith(
+          expect.stringContaining('"path":"/fields/System.Tags"')
+        );
+        expect(mockRequest.write).toHaveBeenCalledWith(
+          expect.stringContaining('"value":"BTAF_Automation"')
+        );
+        done();
+      }).catch(done);
+    });
+
     it('should handle creation failures', (done) => {
       const mockResponse = {
         statusCode: 400,

@@ -105,7 +105,7 @@ class FileUtils {
     }
   }
 
-  async writeTestIdsToFiles(testCaseIds, testPropertyName) {
+  async writeTestIdsToFiles(testCaseIds, testPropertyName, reviewMode = false) {
     const results = [];
     const propertyName = testPropertyName || 'ADOTestCaseId';
 
@@ -125,95 +125,68 @@ class FileUtils {
     for (const [filePath, tests] of Object.entries(fileGroups)) {
       try {
         // Read the file
-        let content = await fs.readFile(filePath, 'utf-8');
+        const originalContent = await fs.readFile(filePath, 'utf-8');
+        let content = originalContent;
         let fileModified = false;
+        const modifications = [];
 
-        // Process each test in this file
-        for (const { testName, testCaseId } of tests) {
-          const testPattern = new RegExp(
-            `(\\[Test(?:[^\\]]*)?\\]\\s*(?:\\[Category[^\\]]+\\]\\s*)*(?:\\[TestProperty[^\\]]+\\]\\s*)*)\\s*(public\\s+(?:async\\s+)?(?:Task\\s+|void\\s+)${testName}\\s*\\([^\\)]*\\))`,
-            's'
+        // Split content into lines for better processing
+        const lines = content.split('\n');
+        
+        // Process each test in this file (in reverse order to maintain line numbers)
+        const testsToProcess = [...tests].reverse();
+        
+        for (const { testName, testCaseId } of testsToProcess) {
+          const modification = await this._processTestMethod(
+            lines, 
+            testName, 
+            testCaseId, 
+            propertyName
           );
-
-          let match = testPattern.exec(content);
           
-          if (!match) {
-            // Try a more flexible approach
-            const testAttrPattern = /\[Test(?:[^\]]*)?]/g;
-            let testAttrMatch;
-            while ((testAttrMatch = testAttrPattern.exec(content)) !== null) {
-              const afterTest = content.substring(testAttrMatch.index);
-              const methodPattern = new RegExp(
-                `public\\s+(?:async\\s+)?(?:Task\\s+|void\\s+)${testName}\\s*\\([^\\)]*\\)`,
-                's'
-              );
-              const methodMatch = methodPattern.exec(afterTest);
-              
-              if (methodMatch) {
-                const testStart = testAttrMatch.index;
-                
-                // Check if Property already exists
-                const attrSection = content.substring(Math.max(0, testStart - 500), testStart);
-                const existingPropertyPattern = new RegExp(
-                  `\\[(?:Test)?Property\\s*\\(\\s*["']${propertyName}["']\\s*,\\s*["'][^"']+["']\\s*\\)`,
-                  'i'
-                );
-                
-                if (existingPropertyPattern.test(attrSection)) {
-                  // Update existing Property
-                  const propertyMatch = existingPropertyPattern.exec(attrSection);
-                  const fullMatch = propertyMatch[0];
-                  const newProperty = `[Property("${propertyName}", "${testCaseId}")]`;
-                  const propertyIndex = Math.max(0, testStart - 500) + propertyMatch.index;
-                  content = content.substring(0, propertyIndex) + newProperty + content.substring(propertyIndex + fullMatch.length);
-                  fileModified = true;
-                } else {
-                  // Insert new Property before [Test]
-                  const indentMatch = content.substring(Math.max(0, testStart - 100), testStart).match(/([ \t]*)$/);
-                  const indent = indentMatch ? indentMatch[1] : '        ';
-                  const newProperty = `${indent}[Property("${propertyName}", "${testCaseId}")]\n`;
-                  content = content.substring(0, testStart) + newProperty + content.substring(testStart);
-                  fileModified = true;
-                }
-                break;
-              }
-            }
-          } else {
-            // Found with pattern - check if TestProperty already exists
-            const attrSection = match[1];
-            const existingPropertyPattern = new RegExp(
-              `\\[(?:Test)?Property\\s*\\(\\s*["']${propertyName}["']\\s*,\\s*["'][^"']+["']\\s*\\)`,
-              'i'
-            );
-            
-            if (existingPropertyPattern.test(attrSection)) {
-              // Update existing Property
-              const updatedSection = attrSection.replace(
-                new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${propertyName}["']\\s*,\\s*["'][^"']+["']\\s*\\)`, 'i'),
-                `[Property("${propertyName}", "${testCaseId}")]`
-              );
-              content = content.substring(0, match.index) + updatedSection + content.substring(match.index + match[1].length);
-              fileModified = true;
-            } else {
-              // Insert new Property before [Test]
-              const testAttrIndex = match.index;
-              const indentMatch = content.substring(Math.max(0, testAttrIndex - 100), testAttrIndex).match(/([ \t]*)$/);
-              const indent = indentMatch ? indentMatch[1] : '        ';
-              const newProperty = `${indent}[Property("${propertyName}", "${testCaseId}")]\n`;
-              content = content.substring(0, testAttrIndex) + newProperty + content.substring(testAttrIndex);
-              fileModified = true;
-            }
+          if (modification) {
+            modifications.push(modification);
+            fileModified = true;
           }
+        }
+
+        // Apply modifications in reverse order (bottom to top) to preserve line numbers
+        for (const mod of modifications.reverse()) {
+          if (mod.type === 'insert') {
+            lines.splice(mod.lineIndex, 0, mod.newLine);
+          } else if (mod.type === 'replace') {
+            lines[mod.lineIndex] = mod.newLine;
+          }
+        }
+
+        // If in review mode, provide preview (always if explicitly requested, or for files with multiple tests)
+        if (reviewMode) {
+          const preview = this._generatePreview(originalContent, lines.join('\n'), modifications);
+          results.push({
+            filePath: filePath,
+            fileName: path.basename(filePath),
+            success: false,
+            needsReview: true,
+            testsAffected: tests.length,
+            modifications: modifications,
+            preview: preview,
+            message: tests.length > 1 
+              ? `Multiple tests found in file. Review recommended before applying changes.`
+              : `Review requested for file changes.`
+          });
+          continue;
         }
 
         // Write the file back if modified
         if (fileModified) {
-          await fs.writeFile(filePath, content, 'utf-8');
+          const newContent = lines.join('\n');
+          await fs.writeFile(filePath, newContent, 'utf-8');
           results.push({
             filePath: filePath,
             fileName: path.basename(filePath),
             success: true,
-            testsUpdated: tests.length
+            testsUpdated: tests.length,
+            modificationsApplied: modifications.length
           });
         } else {
           results.push({
@@ -235,6 +208,106 @@ class FileUtils {
     }
 
     return results;
+  }
+
+  /**
+   * Process a single test method to add or update Property attribute
+   * @private
+   */
+  async _processTestMethod(lines, testName, testCaseId, propertyName) {
+    // Find the test method
+    let testMethodLineIndex = -1;
+    let testAttributeLineIndex = -1;
+    
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      
+      // Look for [Test] attribute
+      if (/^\s*\[Test(?:[^\]]*)?]\s*$/.test(line)) {
+        testAttributeLineIndex = i;
+        
+        // Look ahead for the method signature
+        for (let j = i + 1; j < Math.min(i + 10, lines.length); j++) {
+          const methodLine = lines[j];
+          const methodPattern = new RegExp(
+            `public\\s+(?:async\\s+)?(?:Task\\s+|void\\s+)${testName}\\s*\\(`,
+            'i'
+          );
+          
+          if (methodPattern.test(methodLine)) {
+            testMethodLineIndex = j;
+            break;
+          }
+        }
+        
+        if (testMethodLineIndex !== -1) {
+          break;
+        }
+      }
+    }
+
+    if (testAttributeLineIndex === -1 || testMethodLineIndex === -1) {
+      return null; // Test not found
+    }
+
+    // Get indentation from the [Test] attribute line
+    const testAttributeLine = lines[testAttributeLineIndex];
+    const indentMatch = testAttributeLine.match(/^(\s*)/);
+    const indent = indentMatch ? indentMatch[1] : '        ';
+
+    // Check for existing Property attribute in the range before the test method
+    const existingPropertyPattern = new RegExp(
+      `^\\s*\\[(?:Test)?Property\\s*\\(\\s*["']${propertyName}["']\\s*,\\s*["'][^"']*["']\\s*\\)\\s*]`,
+      'i'
+    );
+
+    let existingPropertyLineIndex = -1;
+    for (let i = Math.max(0, testAttributeLineIndex - 5); i < testMethodLineIndex; i++) {
+      if (existingPropertyPattern.test(lines[i])) {
+        existingPropertyLineIndex = i;
+        break;
+      }
+    }
+
+    const newPropertyLine = `${indent}[Property("${propertyName}", "${testCaseId}")]`;
+
+    if (existingPropertyLineIndex !== -1) {
+      // Replace existing property
+      return {
+        type: 'replace',
+        lineIndex: existingPropertyLineIndex,
+        newLine: newPropertyLine,
+        testName: testName,
+        action: 'Updated existing property'
+      };
+    } else {
+      // Insert new property before [Test] attribute
+      return {
+        type: 'insert',
+        lineIndex: testAttributeLineIndex,
+        newLine: newPropertyLine,
+        testName: testName,
+        action: 'Added new property'
+      };
+    }
+  }
+
+  /**
+   * Generate a preview of changes for review
+   * @private
+   */
+  _generatePreview(originalContent, newContent, modifications) {
+    const preview = {
+      original: originalContent,
+      modified: newContent,
+      changes: modifications.map(mod => ({
+        testName: mod.testName,
+        action: mod.action,
+        line: mod.newLine.trim()
+      }))
+    };
+    
+    return preview;
   }
 
   /**

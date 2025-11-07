@@ -8,14 +8,14 @@ class FileParserService {
   constructor() {
     // Pre-compile regex patterns for better performance
     this.SKIP_DIRECTORIES = new Set(['bin', 'obj', 'node_modules', '.git', 'packages', '.vs', 'TestResults', '.vscode']);
-    this.TEST_METHOD_PATTERN = /\[Test[^\]]*\][^\{]*?(public\s+(?:async\s+)?(?:Task\s+|void\s+)(\w+)\s*\([^\)]*\)\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\})/gs;
+    this.TEST_METHOD_PATTERN = /\[Test(?:\s*[,\]])[^\{]*?(public\s+(?:async\s+)?(?:Task\s+|void\s+)(\w+)\s*\([^\)]*\)\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\})/gs;
     this.CLASS_MATCH_PATTERN = /\[TestFixture[^\]]*\][\s\S]*?public\s+class\s+(\w+)/;
     this.CLASS_FALLBACK_PATTERN = /public\s+class\s+(\w+)/;
     this.TEST_FIXTURE_PATTERN = /\[TestFixture(?:[^\]]*)\]/;
     this.CATEGORY_PATTERN = /\[Category\s*\(\s*["']([^"']+)["']/gi;
     this.TAG_PATTERN = /\[Tag\s*\(\s*["']([^"']+)["']/gi;
     this.BEFORE_CLASS_ATTR_PATTERN = /(\[Category\s*\([^\]]+\)\s*)+\[TestFixture/;
-    this.TEST_ATTRIBUTE_PATTERN = /\[Test(?:\s*,|\s*\])/g;
+    this.TEST_ATTRIBUTE_PATTERN = /(?:^|\n)\s*\[(?:Test|TestCase)(?:\s*,|\s*\]|\s*\()/gm;
     this.METHOD_SIGNATURE_PATTERN = /(public\s+(?:async\s+Task\s+|Task\s+|void\s+)(\w+)\s*\([^\)]*\))/;
     this.EXCLUDED_METHODS = new Set(['Setup', 'TearDown', 'SetUp', 'OneTimeSetUp', 'OneTimeTearDown']);
   }
@@ -228,14 +228,17 @@ class FileParserService {
   parseTestMethods(content, testPropertyName) {
     const testMethods = [];
     
-    const testPropertyPattern = new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${testPropertyName}["']`, 'i');
+    const testPropertyPattern = new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${testPropertyName}["']\\s*,`, 'i');
     
     console.log(`DEBUG: Scanning for property name: "${testPropertyName}"`);
     console.log(`DEBUG: Test property pattern: ${testPropertyPattern.source}`);
     
+    // First, remove commented out sections to avoid parsing commented test attributes
+    const cleanContent = this.removeComments(content);
+    
     this.TEST_METHOD_PATTERN.lastIndex = 0;
     let match;
-    while ((match = this.TEST_METHOD_PATTERN.exec(content)) !== null) {
+    while ((match = this.TEST_METHOD_PATTERN.exec(cleanContent)) !== null) {
       const fullMethod = match[0];
       const methodName = match[2];
       
@@ -249,8 +252,8 @@ class FileParserService {
       }
       
       if (!hasTestCaseId) {
-        const methodStart = content.indexOf(match[1]);
-        const methodCode = this.extractMethodCode(content, methodStart);
+        const methodStart = cleanContent.indexOf(match[1]);
+        const methodCode = this.extractMethodCode(cleanContent, methodStart);
         
         testMethods.push({
           name: methodName,
@@ -269,16 +272,19 @@ class FileParserService {
   analyzeTestFile(content, testPropertyName, filePath) {
     const tests = [];
     
-    let classMatch = this.CLASS_MATCH_PATTERN.exec(content);
+    // Remove commented out sections before analysis
+    const cleanContent = this.removeComments(content);
+    
+    let classMatch = this.CLASS_MATCH_PATTERN.exec(cleanContent);
     if (!classMatch) {
       this.CLASS_FALLBACK_PATTERN.lastIndex = 0;
-      classMatch = this.CLASS_FALLBACK_PATTERN.exec(content);
+      classMatch = this.CLASS_FALLBACK_PATTERN.exec(cleanContent);
     }
     const className = classMatch ? classMatch[1] : null;
     
     const classLevelTags = [];
     this.TEST_FIXTURE_PATTERN.lastIndex = 0;
-    const classFixtureMatch = this.TEST_FIXTURE_PATTERN.exec(content);
+    const classFixtureMatch = this.TEST_FIXTURE_PATTERN.exec(cleanContent);
     if (classFixtureMatch) {
       const fixtureAttrSection = classFixtureMatch[0];
       
@@ -296,7 +302,7 @@ class FileParserService {
     }
     
     this.BEFORE_CLASS_ATTR_PATTERN.lastIndex = 0;
-    const beforeClassAttrMatch = this.BEFORE_CLASS_ATTR_PATTERN.exec(content);
+    const beforeClassAttrMatch = this.BEFORE_CLASS_ATTR_PATTERN.exec(cleanContent);
     if (beforeClassAttrMatch) {
       const beforeClassSection = beforeClassAttrMatch[0];
       this.CATEGORY_PATTERN.lastIndex = 0;
@@ -310,9 +316,9 @@ class FileParserService {
     
     this.TEST_ATTRIBUTE_PATTERN.lastIndex = 0;
     let testMatch;
-    while ((testMatch = this.TEST_ATTRIBUTE_PATTERN.exec(content)) !== null) {
+    while ((testMatch = this.TEST_ATTRIBUTE_PATTERN.exec(cleanContent)) !== null) {
       const testAttrIndex = testMatch.index;
-      const afterTestAttr = content.substring(testAttrIndex + testMatch[0].length, testAttrIndex + testMatch[0].length + 2000);
+      const afterTestAttr = cleanContent.substring(testAttrIndex + testMatch[0].length, testAttrIndex + testMatch[0].length + 2000);
       
       this.METHOD_SIGNATURE_PATTERN.lastIndex = 0;
       const methodMatch = this.METHOD_SIGNATURE_PATTERN.exec(afterTestAttr);
@@ -325,11 +331,44 @@ class FileParserService {
       const testAttrStart = testAttrIndex;
       const methodStart = testAttrIndex + testMatch[0].length + methodMatch.index;
       
-      const searchStart = Math.max(0, testAttrStart - 1000);
-      const methodLineEnd = content.indexOf('\n', methodStart);
+      // To prevent picking up ADO IDs from previous tests while still allowing class-level attributes,
+      // we need to find the boundary between the previous method and current test
+      let searchStart = 0;
+      
+      // Strategy: Look for the last method closing brace before this test
+      // If found, start after it. If not found, include class-level attributes.
+      const textBeforeTest = cleanContent.substring(0, testAttrStart);
+      
+      // Find all closing braces and their positions
+      const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
+      let lastMethodEnd = -1;
+      let match;
+      
+      // Find all method end positions in the text before this test
+      while ((match = methodPattern.exec(textBeforeTest)) !== null) {
+        lastMethodEnd = match.index + match[0].length;
+      }
+      
+      if (lastMethodEnd > -1) {
+        // Start searching after the last method
+        searchStart = lastMethodEnd;
+      } else {
+        // No previous method found, so we can safely include class-level attributes
+        // Look for the class definition start
+        const classMatch = textBeforeTest.match(/class\s+\w+[^{]*\{/);
+        if (classMatch) {
+          const classStart = textBeforeTest.lastIndexOf(classMatch[0]);
+          // Start searching from before the class to include class-level attributes
+          const beforeClass = textBeforeTest.substring(0, classStart);
+          const lastBraceBeforeClass = beforeClass.lastIndexOf('}');
+          searchStart = lastBraceBeforeClass > -1 ? lastBraceBeforeClass + 1 : 0;
+        }
+      }
+      
+      const methodLineEnd = cleanContent.indexOf('\n', methodStart);
       const methodSignature = methodMatch[0];
       const searchEnd = methodLineEnd > -1 ? methodLineEnd : methodStart + methodSignature.length;
-      const attrSection = content.substring(searchStart, searchEnd);
+      const attrSection = cleanContent.substring(searchStart, searchEnd);
       
       testPropertyRegex.lastIndex = 0;
       const adoIdMatch = testPropertyRegex.exec(attrSection);
@@ -387,6 +426,92 @@ class FileParserService {
     }
     
     return methodCode.trim();
+  }
+
+  /**
+   * Remove comments from C# code to avoid parsing commented out test attributes
+   * Handles both single-line (//) and multi-line comments
+   */
+  removeComments(content) {
+    let result = '';
+    let i = 0;
+    const len = content.length;
+    
+    while (i < len) {
+      // Check for single-line comment
+      if (i < len - 1 && content[i] === '/' && content[i + 1] === '/') {
+        // Skip to end of line
+        while (i < len && content[i] !== '\n') {
+          i++;
+        }
+        // Keep the newline
+        if (i < len && content[i] === '\n') {
+          result += '\n';
+          i++;
+        }
+      }
+      // Check for multi-line comment
+      else if (i < len - 1 && content[i] === '/' && content[i + 1] === '*') {
+        // Skip to end of comment
+        i += 2;
+        while (i < len - 1) {
+          if (content[i] === '*' && content[i + 1] === '/') {
+            i += 2;
+            break;
+          }
+          // Preserve newlines to maintain line numbers
+          if (content[i] === '\n') {
+            result += '\n';
+          }
+          i++;
+        }
+      }
+      // Check for string literals to avoid removing // or /* inside strings
+      else if (content[i] === '"') {
+        result += content[i];
+        i++;
+        // Skip to end of string, handling escaped quotes
+        while (i < len) {
+          if (content[i] === '\\' && i < len - 1) {
+            result += content[i] + content[i + 1];
+            i += 2;
+          } else if (content[i] === '"') {
+            result += content[i];
+            i++;
+            break;
+          } else {
+            result += content[i];
+            i++;
+          }
+        }
+      }
+      // Check for character literals
+      else if (content[i] === "'") {
+        result += content[i];
+        i++;
+        // Skip to end of character, handling escaped characters
+        while (i < len) {
+          if (content[i] === '\\' && i < len - 1) {
+            result += content[i] + content[i + 1];
+            i += 2;
+          } else if (content[i] === "'") {
+            result += content[i];
+            i++;
+            break;
+          } else {
+            result += content[i];
+            i++;
+          }
+        }
+      }
+      // Regular character
+      else {
+        result += content[i];
+        i++;
+      }
+    }
+    
+    return result;
   }
 }
 

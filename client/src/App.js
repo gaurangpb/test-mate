@@ -117,16 +117,82 @@ async function mockFetch(url, options = {}) {
 
 	if (url.endsWith('/write-test-ids') && options.method === 'POST') {
 		const body = options.body ? JSON.parse(options.body) : { testCaseIds: [] };
-		const results = (body.testCaseIds || []).map((item, idx) => ({
-			filePath: item.filePath,
-			fileName: item.filePath.split(/[/\\]/).pop(),
+		const reviewMode = body.reviewMode || false;
+		
+		// Group test cases by file to simulate multiple tests per file
+		const fileGroups = {};
+		(body.testCaseIds || []).forEach(item => {
+			if (!fileGroups[item.filePath]) {
+				fileGroups[item.filePath] = [];
+			}
+			fileGroups[item.filePath].push(item);
+		});
+		
+		const results = [];
+		let needsReview = false;
+		
+		Object.entries(fileGroups).forEach(([filePath, tests]) => {
+			if (reviewMode) {
+				// Simulate review needed when review mode is explicitly requested
+				results.push({
+					filePath: filePath,
+					fileName: filePath.split(/[/\\]/).pop(),
+					success: false,
+					needsReview: true,
+					testsAffected: tests.length,
+					modifications: tests.map((test, idx) => ({
+						type: 'insert',
+						lineIndex: 10 + idx,
+						newLine: `        [Property("${body.testPropertyName || 'ADOTestCaseId'}", "${test.testCaseId}")]`,
+						testName: test.testName,
+						action: 'Added new property'
+					})),
+					message: tests.length > 1 
+						? `Multiple tests found in file. Review recommended before applying changes.`
+						: `Review requested for file changes.`
+				});
+				needsReview = true;
+			} else {
+				// Simulate successful update
+				results.push({
+					filePath: filePath,
+					fileName: filePath.split(/[/\\]/).pop(),
+					success: true,
+					testsUpdated: tests.length,
+					modificationsApplied: tests.length
+				});
+			}
+		});
+		
+		const successCount = results.filter(r => r.success).length;
+		let message = `Successfully updated ${successCount} file(s)`;
+		if (needsReview) {
+			const reviewCount = results.filter(r => r.needsReview).length;
+			message += `. ${reviewCount} file(s) need review due to multiple tests.`;
+		}
+		message += ' (Mock Mode)';
+		
+		return createMockResponse({
+			success: successCount > 0,
+			results: results,
+			message: message,
+			needsReview: needsReview
+		});
+	}
+
+	if (url.endsWith('/apply-reviewed-changes') && options.method === 'POST') {
+		const body = options.body ? JSON.parse(options.body) : { approvedChanges: [] };
+		const results = (body.approvedChanges || []).map(change => ({
+			filePath: change.filePath,
+			fileName: change.filePath.split(/[/\\]/).pop(),
 			success: true,
-			testsUpdated: 1
+			modificationsApplied: change.modifications?.length || 0
 		}));
+		
 		return createMockResponse({
 			success: true,
 			results: results,
-			message: `Successfully updated ${results.length} file(s) with ADOTestCaseId properties (Mock Mode)`
+			message: `Successfully applied changes to ${results.length} file(s) (Mock Mode)`
 		});
 	}
 
@@ -165,6 +231,8 @@ export default function App() {
   const [adoConfigured, setAdoConfigured] = useState(false);
   const [adoConfig, setAdoConfig] = useState(null);
   const [contextSuggestions, setContextSuggestions] = useState(null);
+  const [addTags, setAddTags] = useState(true);
+  const [reviewResults, setReviewResults] = useState(null); // Track files that need review
 
   // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
@@ -556,7 +624,8 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          testCases: testCases
+          testCases: testCases,
+          addTags: addTags
         })
       });
 
@@ -589,7 +658,7 @@ export default function App() {
     }
   };
 
-  const handleWriteIdsToFiles = async () => {
+  const handleWriteIdsToFiles = async (reviewMode = false) => {
     if (Object.keys(createdTestCaseIds).length === 0) {
       setError('No test case IDs available. Please create test cases in ADO first.');
       return;
@@ -629,12 +698,26 @@ export default function App() {
         throw new Error('No test files found. Please scan the repository first.');
       }
 
+      // Check if we need to enable review mode automatically
+      const fileGroups = {};
+      testCaseIdsToWrite.forEach(item => {
+        if (!fileGroups[item.filePath]) {
+          fileGroups[item.filePath] = [];
+        }
+        fileGroups[item.filePath].push(item);
+      });
+      
+      const filesWithMultipleTests = Object.values(fileGroups).filter(tests => tests.length > 1);
+      // Use review mode if explicitly requested OR if there are files with multiple tests
+      const shouldUseReviewMode = reviewMode || filesWithMultipleTests.length > 0;
+
       const response = await apiFetch(`${API_BASE_URL}/write-test-ids`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           testCaseIds: testCaseIdsToWrite,
-          testPropertyName: config.testPropertyName
+          testPropertyName: config.testPropertyName,
+          reviewMode: shouldUseReviewMode
         })
       });
 
@@ -645,7 +728,21 @@ export default function App() {
 
       const data = await response.json();
       
-      if (data.success) {
+      if (data.needsReview) {
+        // Handle review mode results
+        const reviewCount = data.results.filter(r => r.needsReview).length;
+        const autoUpdatedCount = data.results.filter(r => r.success).length;
+        
+        setReviewResults(data.results.filter(r => r.needsReview));
+        
+        let message = '';
+        if (autoUpdatedCount > 0) {
+          message += `Successfully updated ${autoUpdatedCount} file(s). `;
+        }
+        message += `${reviewCount} file(s) with multiple tests require review before updating.`;
+        
+        setSuccessMessage(message);
+      } else if (data.success) {
         // Show success message
         const successCount = data.results.filter(r => r.success).length;
         setError(null);
@@ -655,6 +752,42 @@ export default function App() {
         if (failedFiles.length > 0) {
           throw new Error(`Failed to update some files: ${failedFiles.map(f => f.fileName).join(', ')}`);
         }
+      }
+      
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsWritingIds(false);
+    }
+  };
+
+  const handleApplyReviewedChanges = async (approvedChanges) => {
+    setIsWritingIds(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/apply-reviewed-changes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          approvedChanges: approvedChanges
+        })
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to apply reviewed changes');
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        const successCount = data.results.filter(r => r.success).length;
+        setSuccessMessage(`Successfully applied changes to ${successCount} file(s)!`);
+        setReviewResults(null); // Clear review results
+      } else {
+        throw new Error('Failed to apply some changes');
       }
       
     } catch (err) {
@@ -1302,23 +1435,33 @@ export default function App() {
                       <Download className="w-4 h-4" />
                       Export IDs
                     </button>
-                    <button
-                      onClick={handleWriteIdsToFiles}
-                      disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                    >
-                      {isWritingIds ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Writing...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-4 h-4" />
-                          Write IDs to Files
-                        </>
-                      )}
-                    </button>
+                    <div className="flex gap-1">
+                      <button
+                        onClick={() => handleWriteIdsToFiles(false)}
+                        disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-l-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                      >
+                        {isWritingIds ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Writing...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            Write IDs to Files
+                          </>
+                        )}
+                      </button>
+                      <button
+                        onClick={() => handleWriteIdsToFiles(true)}
+                        disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
+                        className="flex items-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-r-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors border-l border-blue-400"
+                        title="Review changes before applying (recommended for multiple IDs per file)"
+                      >
+                        <Settings className="w-4 h-4" />
+                      </button>
+                    </div>
                     <button
                       onClick={handleCreateInAdo}
                       disabled={isCreatingInAdo || !adoConfigured}
@@ -1338,6 +1481,109 @@ export default function App() {
                     </button>
                   </div>
                 </div>
+
+                {/* Tag Configuration Section */}
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <div className="flex items-start gap-3">
+                    <input
+                      type="checkbox"
+                      id="addTags"
+                      checked={addTags}
+                      onChange={(e) => setAddTags(e.target.checked)}
+                      className="mt-1 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
+                    />
+                    <div className="flex-1">
+                      <label htmlFor="addTags" className="text-sm font-medium text-blue-900 cursor-pointer">
+                        Add automation tags to test cases
+                      </label>
+                      <p className="text-xs text-blue-700 mt-1">
+                        When enabled, the "BTAF_Automation" tag will be added to all created test cases in Azure DevOps for easier identification and filtering.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Review Results Section */}
+                {reviewResults && reviewResults.length > 0 && (
+                  <div className="border border-amber-200 rounded-lg overflow-hidden">
+                    <div className="bg-amber-50 px-4 py-3 border-b border-amber-200">
+                      <h3 className="font-semibold text-gray-900 flex items-center gap-2">
+                        <Settings className="w-5 h-5 text-amber-600" />
+                        Files Requiring Review
+                      </h3>
+                      <p className="text-xs text-gray-600 mt-1">
+                        The following files contain multiple tests and require review before applying changes.
+                      </p>
+                    </div>
+                    <div className="p-4 space-y-4">
+                      {reviewResults.map((reviewFile, idx) => (
+                        <div key={idx} className="border border-gray-200 rounded-lg overflow-hidden">
+                          <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
+                            <div className="flex items-center justify-between">
+                              <div>
+                                <h4 className="font-medium text-gray-900">{reviewFile.fileName}</h4>
+                                <p className="text-xs text-gray-500">{reviewFile.filePath}</p>
+                                <p className="text-xs text-amber-600 mt-1">
+                                  {reviewFile.testsAffected} tests affected • {reviewFile.modifications?.length || 0} modifications
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                          <div className="p-4">
+                            <h5 className="text-sm font-semibold text-gray-700 mb-2">Proposed Changes:</h5>
+                            <div className="space-y-2">
+                              {reviewFile.modifications?.map((mod, modIdx) => (
+                                <div key={modIdx} className="bg-gray-50 p-3 rounded border border-gray-200">
+                                  <div className="flex items-center justify-between mb-2">
+                                    <span className="text-sm font-medium text-gray-900">{mod.testName}</span>
+                                    <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded">
+                                      {mod.action}
+                                    </span>
+                                  </div>
+                                  <pre className="text-xs bg-gray-800 text-green-400 p-2 rounded font-mono overflow-x-auto">
+                                    + {mod.newLine.trim()}
+                                  </pre>
+                                </div>
+                              ))}
+                            </div>
+                            <div className="flex gap-2 mt-4">
+                              <button
+                                onClick={() => handleApplyReviewedChanges([reviewFile])}
+                                disabled={isWritingIds}
+                                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                              >
+                                <CheckCircle className="w-4 h-4" />
+                                Apply Changes
+                              </button>
+                              <button
+                                onClick={() => setReviewResults(reviewResults.filter((_, i) => i !== idx))}
+                                className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                              >
+                                Skip
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      ))}
+                      <div className="flex gap-2">
+                        <button
+                          onClick={() => handleApplyReviewedChanges(reviewResults)}
+                          disabled={isWritingIds}
+                          className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                        >
+                          <CheckCircle className="w-4 h-4" />
+                          Apply All Changes
+                        </button>
+                        <button
+                          onClick={() => setReviewResults(null)}
+                          className="flex items-center gap-2 px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                        >
+                          Cancel Review
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
 
                 {Object.entries(generatedDocs).map(([testName, doc]) => {
                   const testCaseId = createdTestCaseIds[testName];

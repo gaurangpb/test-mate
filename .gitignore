@@ -2,14 +2,15 @@
 node_modules/
 /.pnp
 .pnp.js
+package-lock.json
 
 # Testing
 /coverage
-/tests
 
 # Production
 /build
 /dist
+client/build/
 
 # Environment variables
 .env
