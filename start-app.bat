@@ -23,7 +23,7 @@ REM Check if .env file exists
 if not exist .env (
     echo WARNING: .env file not found!
     echo Please create a .env file with your OPENAI_API_KEY
-    echo See env-example.sh for reference
+    echo See .env.example for reference
     echo.
 )
 

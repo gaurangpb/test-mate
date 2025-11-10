@@ -52,7 +52,7 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
 
 4. **Set up environment variables**:
 
-   - Copy `env-example.sh` to `.env`
+   - Copy `.env.example` to `.env`
    - Edit `.env` and add your configuration:
 
      ```env
@@ -472,7 +472,7 @@ test-mate/
 │   ├── Integration/
 │   └── UI/
 ├── package.json           # Backend dependencies
-├── .env                   # Environment variables (create from env-example.sh)
+├── .env                   # Environment variables (create from .env.example)
 └── README.md
 ```
 

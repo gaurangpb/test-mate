@@ -1027,7 +1027,7 @@ export default function App() {
                       <div className="flex-1">
                         <p className="text-sm font-medium text-yellow-800">OpenAI API Key Not Configured</p>
                         <p className="text-xs text-yellow-700 mt-1">
-                          Please set OPENAI_API_KEY in your .env file (see env-example.sh for reference)
+                          Please set OPENAI_API_KEY in your .env file (see .env.example for reference)
                         </p>
                       </div>
                     </div>
