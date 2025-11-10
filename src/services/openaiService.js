@@ -190,16 +190,33 @@ Test Samples:
 ${JSON.stringify(testSamples, null, 2)}`;
 
     if (existingContext) {
-      prompt += `\n\n=== EXISTING DOMAIN CONTEXT ===\n${existingContext.substring(0, 3000)}\n=== END EXISTING CONTEXT ===\n\n`;
+      // Include full context if reasonable size, otherwise include a larger portion
+      const contextToInclude = existingContext.length > 10000 
+        ? existingContext.substring(0, 10000) + '\n\n[... existing context continues ...]'
+        : existingContext;
+      prompt += `\n\n=== EXISTING DOMAIN CONTEXT ===\n${contextToInclude}\n=== END EXISTING CONTEXT ===\n\n`;
       prompt += `Compare the test code with the existing domain context above. Identify:\n`;
       prompt += `- **New Concepts**: Terminology, workflows, or features not in existing context\n`;
       prompt += `- **Missing Information**: Details that should be added to existing sections\n`;
-      prompt += `- **Potential Updates**: Information that might be outdated or incomplete\n`;
+      prompt += `- **Potential Updates**: Information that might be outdated or incomplete\n\n`;
+      prompt += `IMPORTANT: For the "suggestedContextUpdates" field, generate the COMPLETE domain-context.md file content that includes:\n`;
+      prompt += `1. All existing content from the context above (preserve it)\n`;
+      prompt += `2. All new terminology items formatted as markdown bullet points in a "Domain Terminology" section\n`;
+      prompt += `3. All new workflows formatted in a "User Journeys and Workflows" section\n`;
+      prompt += `4. All new features formatted in a "Core Features and Modules" section\n`;
+      prompt += `5. All business rules formatted in a "Business Rules and Constraints" section\n`;
+      prompt += `6. Mark new additions with HTML comments like <!-- NEW --> before new items so they can be easily identified\n`;
+      prompt += `7. Integrate new content into appropriate existing sections where relevant\n`;
     } else {
-      prompt += `\n\nExtract all domain concepts that would be useful for creating comprehensive domain context.`;
+      prompt += `\n\nExtract all domain concepts that would be useful for creating comprehensive domain context.\n\n`;
+      prompt += `IMPORTANT: For the "suggestedContextUpdates" field, generate a COMPLETE domain-context.md file that includes:\n`;
+      prompt += `1. A "Domain Terminology" section with ALL extracted terminology items as markdown bullet points\n`;
+      prompt += `2. A "User Journeys and Workflows" section with ALL extracted workflows\n`;
+      prompt += `3. A "Core Features and Modules" section with ALL extracted features\n`;
+      prompt += `4. A "Business Rules and Constraints" section with ALL extracted business rules\n`;
     }
 
-    prompt += `\n\nReturn your analysis in this exact JSON format:\n{\n  "newTerminology": [\n    {\n      "term": "Term name",\n      "definition": "What this term means in the domain",\n      "examples": ["example usage from tests"]\n    }\n  ],\n  "newWorkflows": [\n    {\n      "name": "Workflow name",\n      "description": "What this workflow does",\n      "steps": ["step1", "step2", "step3"],\n      "testEvidence": ["test names or code snippets that show this workflow"]\n    }\n  ],\n  "newFeatures": [\n    {\n      "name": "Feature name",\n      "description": "What this feature does",\n      "testEvidence": ["test names that test this feature"]\n    }\n  ],\n  "businessRules": [\n    {\n      "rule": "Rule description",\n      "testEvidence": ["test names that validate this rule"]\n    }\n  ],\n  "suggestedContextUpdates": "Formatted markdown text that could be added to domain context file",\n  "confidence": "high|medium|low - confidence in these suggestions"\n}`;
+    prompt += `\n\nReturn your analysis in this exact JSON format:\n{\n  "newTerminology": [\n    {\n      "term": "Term name",\n      "definition": "What this term means in the domain",\n      "examples": ["example usage from tests"]\n    }\n  ],\n  "newWorkflows": [\n    {\n      "name": "Workflow name",\n      "description": "What this workflow does",\n      "steps": ["step1", "step2", "step3"],\n      "testEvidence": ["test names or code snippets that show this workflow"]\n    }\n  ],\n  "newFeatures": [\n    {\n      "name": "Feature name",\n      "description": "What this feature does",\n      "testEvidence": ["test names that test this feature"]\n    }\n  ],\n  "businessRules": [\n    {\n      "rule": "Rule description",\n      "testEvidence": ["test names that validate this rule"]\n    }\n  ],\n  "suggestedContextUpdates": "COMPLETE formatted markdown file content that includes ALL extracted concepts. If existing context was provided, include the full file with new content integrated and marked with <!-- NEW --> comments.",\n  "confidence": "high|medium|low - confidence in these suggestions"\n}\n\nCRITICAL: The "suggestedContextUpdates" field must include ALL terminology, workflows, features, and business rules extracted above. Do not summarize - include everything in properly formatted markdown.`;
 
     try {
       console.log(`Extracting domain concepts from ${tests.length} test(s)`);
@@ -217,7 +234,7 @@ ${JSON.stringify(testSamples, null, 2)}`;
           }
         ],
         temperature: 0.5, // Lower temperature for more consistent extraction
-        max_tokens: 2000,
+        max_tokens: 4000, // Increased to allow for comprehensive context updates
         response_format: { type: 'json_object' }
       });
 

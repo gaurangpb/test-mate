@@ -21,3 +21,8 @@ ADO_TEST_SUITE_ID=789012
 # Create at: https://dev.azure.com/YourOrganization/_usersSettings/tokens
 # Required scopes: Test management (read & write), Work items (read & write)
 ADO_PAT=your-personal-access-token-here
+
+# ADO Mock Mode (Optional)
+# Set to 'true' to enable mock mode - test cases will be simulated without actually creating them in ADO
+# This is useful for testing and development without affecting your ADO instance
+ADO_MOCK_MODE=false

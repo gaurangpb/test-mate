@@ -38,10 +38,15 @@ class FileParserService {
         const testMethods = this.parseTestMethods(fileContent, testPropertyName || 'ADOTestCaseId');
         
         if (testMethods.length > 0) {
+          // Extract class name from file content
+          const analysis = this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
+          const className = analysis.className || path.basename(filePath, '.cs');
+          
           console.log(`DEBUG: File ${path.basename(filePath)} has ${testMethods.length} tests without IDs`);
           return {
             fileName: path.basename(filePath),
             filePath: filePath,
+            className: className,
             testMethods: testMethods
           };
         } else {

@@ -21,8 +21,11 @@ router.get('/ado/status', (req, res) => {
     process.env.ADO_PAT
   );
   
+  const mockMode = process.env.ADO_MOCK_MODE === 'true' || process.env.ADO_MOCK_MODE === '1';
+  
   res.json({ 
     configured: adoConfigured,
+    mockMode: mockMode,
     config: adoConfigured ? {
       organizationUrl: process.env.ADO_ORGANIZATION_URL,
       projectName: process.env.ADO_PROJECT_NAME,

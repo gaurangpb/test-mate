@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag, Lightbulb, Plus } from 'lucide-react';
+import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag, Lightbulb, Plus, Folder, File, ChevronRight, ChevronDown, X, Save } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:3001/api';
 const USE_MOCK = process.env.REACT_APP_USE_MOCK === 'true';
@@ -117,7 +117,6 @@ async function mockFetch(url, options = {}) {
 
 	if (url.endsWith('/write-test-ids') && options.method === 'POST') {
 		const body = options.body ? JSON.parse(options.body) : { testCaseIds: [] };
-		const reviewMode = body.reviewMode || false;
 		
 		// Group test cases by file to simulate multiple tests per file
 		const fileGroups = {};
@@ -129,70 +128,25 @@ async function mockFetch(url, options = {}) {
 		});
 		
 		const results = [];
-		let needsReview = false;
 		
 		Object.entries(fileGroups).forEach(([filePath, tests]) => {
-			if (reviewMode) {
-				// Simulate review needed when review mode is explicitly requested
-				results.push({
-					filePath: filePath,
-					fileName: filePath.split(/[/\\]/).pop(),
-					success: false,
-					needsReview: true,
-					testsAffected: tests.length,
-					modifications: tests.map((test, idx) => ({
-						type: 'insert',
-						lineIndex: 10 + idx,
-						newLine: `        [Property("${body.testPropertyName || 'ADOTestCaseId'}", "${test.testCaseId}")]`,
-						testName: test.testName,
-						action: 'Added new property'
-					})),
-					message: tests.length > 1 
-						? `Multiple tests found in file. Review recommended before applying changes.`
-						: `Review requested for file changes.`
-				});
-				needsReview = true;
-			} else {
-				// Simulate successful update
-				results.push({
-					filePath: filePath,
-					fileName: filePath.split(/[/\\]/).pop(),
-					success: true,
-					testsUpdated: tests.length,
-					modificationsApplied: tests.length
-				});
-			}
+			// Simulate successful update
+			results.push({
+				filePath: filePath,
+				fileName: filePath.split(/[/\\]/).pop(),
+				success: true,
+				testsUpdated: tests.length,
+				modificationsApplied: tests.length
+			});
 		});
 		
 		const successCount = results.filter(r => r.success).length;
-		let message = `Successfully updated ${successCount} file(s)`;
-		if (needsReview) {
-			const reviewCount = results.filter(r => r.needsReview).length;
-			message += `. ${reviewCount} file(s) need review due to multiple tests.`;
-		}
-		message += ' (Mock Mode)';
+		const message = `Successfully updated ${successCount} file(s) (Mock Mode)`;
 		
 		return createMockResponse({
 			success: successCount > 0,
 			results: results,
-			message: message,
-			needsReview: needsReview
-		});
-	}
-
-	if (url.endsWith('/apply-reviewed-changes') && options.method === 'POST') {
-		const body = options.body ? JSON.parse(options.body) : { approvedChanges: [] };
-		const results = (body.approvedChanges || []).map(change => ({
-			filePath: change.filePath,
-			fileName: change.filePath.split(/[/\\]/).pop(),
-			success: true,
-			modificationsApplied: change.modifications?.length || 0
-		}));
-		
-		return createMockResponse({
-			success: true,
-			results: results,
-			message: `Successfully applied changes to ${results.length} file(s) (Mock Mode)`
+			message: message
 		});
 	}
 
@@ -206,12 +160,103 @@ async function apiFetch(url, options) {
 	return fetch(url, options);
 }
 
+// Helper function to parse error responses (handles both JSON and HTML/text)
+async function parseErrorResponse(response, defaultMessage) {
+	let errorMessage = defaultMessage;
+	try {
+		const contentType = response.headers.get('content-type');
+		if (contentType && contentType.includes('application/json')) {
+			const errorData = await response.json();
+			errorMessage = errorData.error || errorMessage;
+		} else {
+			const text = await response.text();
+			errorMessage = `Server error (${response.status}): ${text.substring(0, 200)}`;
+		}
+	} catch (parseError) {
+		errorMessage = `Server error (${response.status}). Please check if the server is running.`;
+	}
+	return errorMessage;
+}
+
+// File Tree Component for displaying test files
+function FileTree({ tree, files, selectedFilePaths, onToggleFile, level = 0 }) {
+  const [expanded, setExpanded] = useState({});
+
+  const toggleExpand = (path) => {
+    setExpanded(prev => ({ ...prev, [path]: !prev[path] }));
+  };
+
+  const renderTree = (node, path = '') => {
+    const entries = Object.entries(node).sort(([a], [b]) => {
+      const aIsDir = node[a].type === 'directory';
+      const bIsDir = node[b].type === 'directory';
+      if (aIsDir !== bIsDir) {
+        return aIsDir ? -1 : 1; // Directories first
+      }
+      return a.localeCompare(b);
+    });
+
+    return (
+      <div className={level > 0 ? 'ml-4' : ''}>
+        {entries.map(([name, item]) => {
+          const currentPath = path ? `${path}/${name}` : name;
+          
+          if (item.type === 'directory') {
+            const isExpanded = expanded[currentPath];
+            return (
+              <div key={currentPath} className="mb-1">
+                <div
+                  className="flex items-center gap-2 py-1 px-2 hover:bg-gray-50 rounded cursor-pointer"
+                  onClick={() => toggleExpand(currentPath)}
+                >
+                  {isExpanded ? (
+                    <ChevronDown className="w-4 h-4 text-gray-500" />
+                  ) : (
+                    <ChevronRight className="w-4 h-4 text-gray-500" />
+                  )}
+                  <Folder className="w-4 h-4 text-blue-500" />
+                  <span className="text-sm text-gray-700">{name}</span>
+                </div>
+                {isExpanded && (
+                  <div className="mt-1">
+                    {renderTree(item.children, currentPath)}
+                  </div>
+                )}
+              </div>
+            );
+          } else {
+            // It's a file
+            const filePath = item.relativePath || item.absolutePath;
+            const isSelected = selectedFilePaths.has(filePath);
+            return (
+              <div key={currentPath} className="mb-1">
+                <label className="flex items-center gap-2 py-1 px-2 hover:bg-gray-50 rounded cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleFile(filePath)}
+                    className="w-4 h-4 text-amber-600 rounded focus:ring-2 focus:ring-amber-500"
+                  />
+                  <File className="w-4 h-4 text-gray-500" />
+                  <span className="text-sm text-gray-700 flex-1">{name}</span>
+                  <span className="text-xs text-gray-400 truncate max-w-xs" title={item.relativePath}>{item.relativePath}</span>
+                </label>
+              </div>
+            );
+          }
+        })}
+      </div>
+    );
+  };
+
+  return <div>{renderTree(tree)}</div>;
+}
+
 export default function App() {
   const [activeTab, setActiveTab] = useState('config');
   const [config, setConfig] = useState({
-    repoPath: '',
-    testPropertyName: 'ADOTestCaseId',
-    domainContextPath: ''
+    repoPath: 'c:\\workspace\\test-mate\\tests',
+    testPropertyName: 'ADOTestCaseId'
   });
   const [scanResults, setScanResults] = useState(null);
   const [selectedTests, setSelectedTests] = useState(new Set());
@@ -230,9 +275,15 @@ export default function App() {
   const [openAiConfigured, setOpenAiConfigured] = useState(false);
   const [adoConfigured, setAdoConfigured] = useState(false);
   const [adoConfig, setAdoConfig] = useState(null);
+  const [adoMockMode, setAdoMockMode] = useState(false);
   const [contextSuggestions, setContextSuggestions] = useState(null);
   const [addTags, setAddTags] = useState(true);
-  const [reviewResults, setReviewResults] = useState(null); // Track files that need review
+  const [showFileSelector, setShowFileSelector] = useState(false);
+  const [testFilesList, setTestFilesList] = useState(null);
+  const [selectedFilePaths, setSelectedFilePaths] = useState(new Set());
+  const [editedContextContent, setEditedContextContent] = useState('');
+  const [isSavingContext, setIsSavingContext] = useState(false);
+  const [contextSaveSuccess, setContextSaveSuccess] = useState(false);
 
   // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
@@ -251,6 +302,7 @@ export default function App() {
           const adoData = await adoResponse.json();
           setAdoConfigured(adoData.configured);
           setAdoConfig(adoData.config);
+          setAdoMockMode(adoData.mockMode || false);
         }
       } catch (err) {
         console.error('Failed to check configuration status:', err);
@@ -290,8 +342,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to scan repository');
+        const errorMessage = await parseErrorResponse(response, 'Failed to scan repository');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -334,8 +386,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to analyze repository');
+        const errorMessage = await parseErrorResponse(response, 'Failed to analyze repository');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -345,6 +397,39 @@ export default function App() {
       setError(err.message);
     } finally {
       setIsAnalyzing(false);
+    }
+  };
+
+  const loadTestFiles = async () => {
+    if (!config.repoPath) {
+      setError('Please enter a repository path');
+      return;
+    }
+
+    setError(null);
+    setIsAnalyzingContext(true);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/test-files-list`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: config.repoPath
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to load test files');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      setTestFilesList(data);
+      setShowFileSelector(true);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsAnalyzingContext(false);
     }
   };
 
@@ -359,9 +444,20 @@ export default function App() {
       return;
     }
 
+    // First, load test files and show file selector
+    await loadTestFiles();
+  };
+
+  const handleAnalyzeSelectedFiles = async () => {
+    if (selectedFilePaths.size === 0) {
+      setError('Please select at least one test file');
+      return;
+    }
+
     setIsAnalyzingContext(true);
     setError(null);
     setSuccessMessage(null);
+    setShowFileSelector(false);
 
     try {
       const response = await apiFetch(`${API_BASE_URL}/suggest-context-updates`, {
@@ -369,25 +465,81 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           repoPath: config.repoPath,
-          domainContextPath: config.domainContextPath || null,
-          testPropertyName: config.testPropertyName,
-          limit: 50
+          selectedFilePaths: Array.from(selectedFilePaths),
+          testPropertyName: config.testPropertyName
         })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to analyze context updates');
+        const errorMessage = await parseErrorResponse(response, 'Failed to analyze context updates');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
       setContextSuggestions(data);
-      setSuccessMessage(`Analyzed ${data.analysisSummary.testsAnalyzed} tests and found ${data.suggestions.newTerminology.length + data.suggestions.newWorkflows.length + data.suggestions.newFeatures.length} new concepts`);
+      setEditedContextContent(data.suggestions.suggestedContextUpdates || '');
+      setContextSaveSuccess(false); // Reset success state for new analysis
+      setSuccessMessage(`Analyzed ${data.analysisSummary.testsAnalyzed} tests from ${data.analysisSummary.filesAnalyzed} files and found ${data.suggestions.newTerminology.length + data.suggestions.newWorkflows.length + data.suggestions.newFeatures.length} new concepts`);
     } catch (err) {
       setError(err.message);
     } finally {
       setIsAnalyzingContext(false);
     }
+  };
+
+  const handleSaveDomainContext = async () => {
+    if (!editedContextContent.trim()) {
+      setError('Context content cannot be empty');
+      return;
+    }
+
+    setIsSavingContext(true);
+    setError(null);
+    setContextSaveSuccess(false);
+
+    try {
+      // Remove <!-- NEW --> comments from content before saving
+      const cleanedContent = editedContextContent
+        .replace(/<!--\s*NEW\s*-->/gi, '')
+        .replace(/\n\s*\n\s*\n/g, '\n\n') // Clean up extra blank lines
+        .trim();
+
+      const response = await apiFetch(`${API_BASE_URL}/save-domain-context`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: config.repoPath,
+          content: cleanedContent
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to save domain context');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      const successMsg = data.created 
+        ? 'Domain context file created successfully!' 
+        : 'Domain context file updated successfully!';
+      setSuccessMessage(successMsg);
+      setContextSaveSuccess(true);
+    } catch (err) {
+      setError(err.message);
+      setContextSaveSuccess(false);
+    } finally {
+      setIsSavingContext(false);
+    }
+  };
+
+  const toggleFileSelection = (filePath) => {
+    const newSelection = new Set(selectedFilePaths);
+    if (newSelection.has(filePath)) {
+      newSelection.delete(filePath);
+    } else {
+      newSelection.add(filePath);
+    }
+    setSelectedFilePaths(newSelection);
   };
 
   const handleGenerate = async () => {
@@ -425,8 +577,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to generate documentation');
+        const errorMessage = await parseErrorResponse(response, 'Failed to generate documentation');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -630,8 +782,8 @@ export default function App() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to create test cases in ADO');
+        const errorMessage = await parseErrorResponse(response, 'Failed to create test cases in ADO');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
@@ -658,7 +810,7 @@ export default function App() {
     }
   };
 
-  const handleWriteIdsToFiles = async (reviewMode = false) => {
+  const handleWriteIdsToFiles = async () => {
     if (Object.keys(createdTestCaseIds).length === 0) {
       setError('No test case IDs available. Please create test cases in ADO first.');
       return;
@@ -698,51 +850,23 @@ export default function App() {
         throw new Error('No test files found. Please scan the repository first.');
       }
 
-      // Check if we need to enable review mode automatically
-      const fileGroups = {};
-      testCaseIdsToWrite.forEach(item => {
-        if (!fileGroups[item.filePath]) {
-          fileGroups[item.filePath] = [];
-        }
-        fileGroups[item.filePath].push(item);
-      });
-      
-      const filesWithMultipleTests = Object.values(fileGroups).filter(tests => tests.length > 1);
-      // Use review mode if explicitly requested OR if there are files with multiple tests
-      const shouldUseReviewMode = reviewMode || filesWithMultipleTests.length > 0;
-
       const response = await apiFetch(`${API_BASE_URL}/write-test-ids`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           testCaseIds: testCaseIdsToWrite,
-          testPropertyName: config.testPropertyName,
-          reviewMode: shouldUseReviewMode
+          testPropertyName: config.testPropertyName
         })
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to write test case IDs to files');
+        const errorMessage = await parseErrorResponse(response, 'Failed to write test case IDs to files');
+        throw new Error(errorMessage);
       }
 
       const data = await response.json();
       
-      if (data.needsReview) {
-        // Handle review mode results
-        const reviewCount = data.results.filter(r => r.needsReview).length;
-        const autoUpdatedCount = data.results.filter(r => r.success).length;
-        
-        setReviewResults(data.results.filter(r => r.needsReview));
-        
-        let message = '';
-        if (autoUpdatedCount > 0) {
-          message += `Successfully updated ${autoUpdatedCount} file(s). `;
-        }
-        message += `${reviewCount} file(s) with multiple tests require review before updating.`;
-        
-        setSuccessMessage(message);
-      } else if (data.success) {
+      if (data.success) {
         // Show success message
         const successCount = data.results.filter(r => r.success).length;
         setError(null);
@@ -752,42 +876,6 @@ export default function App() {
         if (failedFiles.length > 0) {
           throw new Error(`Failed to update some files: ${failedFiles.map(f => f.fileName).join(', ')}`);
         }
-      }
-      
-    } catch (err) {
-      setError(err.message);
-    } finally {
-      setIsWritingIds(false);
-    }
-  };
-
-  const handleApplyReviewedChanges = async (approvedChanges) => {
-    setIsWritingIds(true);
-    setError(null);
-    setSuccessMessage(null);
-
-    try {
-      const response = await apiFetch(`${API_BASE_URL}/apply-reviewed-changes`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          approvedChanges: approvedChanges
-        })
-      });
-
-      if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to apply reviewed changes');
-      }
-
-      const data = await response.json();
-      
-      if (data.success) {
-        const successCount = data.results.filter(r => r.success).length;
-        setSuccessMessage(`Successfully applied changes to ${successCount} file(s)!`);
-        setReviewResults(null); // Clear review results
-      } else {
-        throw new Error('Failed to apply some changes');
       }
       
     } catch (err) {
@@ -954,12 +1042,24 @@ export default function App() {
                     <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-green-50 border border-green-200">
                       <CheckCircle className="w-5 h-5 text-green-600 flex-shrink-0" />
                       <div className="flex-1">
-                        <p className="text-sm font-medium text-green-800">Azure DevOps Configured</p>
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-medium text-green-800">Azure DevOps Configured</p>
+                          {adoMockMode && (
+                            <span className="px-2 py-0.5 bg-yellow-100 text-yellow-800 text-xs rounded font-medium border border-yellow-300" title="Mock mode is enabled - test cases will be simulated without creating them in ADO">
+                              🧪 MOCK MODE
+                            </span>
+                          )}
+                        </div>
                         {adoConfig && (
                           <div className="text-xs text-green-700 mt-1">
                             <p>Organization: {adoConfig.organizationUrl}</p>
                             <p>Project: {adoConfig.projectName}</p>
                             <p>Test Plan: {adoConfig.testPlanId}, Suite: {adoConfig.testSuiteId}</p>
+                            {adoMockMode && (
+                              <p className="text-yellow-700 mt-1 font-medium">
+                                ⚠️ Mock mode enabled - no actual test cases will be created in ADO
+                              </p>
+                            )}
                           </div>
                         )}
                       </div>
@@ -971,6 +1071,9 @@ export default function App() {
                         <p className="text-sm font-medium text-yellow-800">Azure DevOps Not Configured</p>
                         <p className="text-xs text-yellow-700 mt-1">
                           Please set ADO_ORGANIZATION_URL, ADO_PROJECT_NAME, ADO_TEST_PLAN_ID, ADO_TEST_SUITE_ID, and ADO_PAT in your .env file
+                        </p>
+                        <p className="text-xs text-gray-600 mt-1">
+                          To enable mock mode (for testing without creating real test cases), set ADO_MOCK_MODE=true in your .env file
                         </p>
                       </div>
                     </div>
@@ -985,40 +1088,23 @@ export default function App() {
                     <div className="flex-1">
                       <p className="text-sm font-medium text-gray-900">{config.testPropertyName}</p>
                       <p className="text-xs text-gray-500 mt-1">
-                        The attribute name used to store ADO test case IDs (configured)
+                        The attribute name used to store ADO test case IDs
                       </p>
-                    </div>
-                    <div className="flex-shrink-0">
-                      <span className="px-2 py-1 bg-blue-100 text-blue-700 text-xs rounded font-medium">
-                        Configured
-                      </span>
                     </div>
                   </div>
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Domain Context File (Optional)
-                  </label>
-                  <input
-                    type="text"
-                    value={config.domainContextPath}
-                    onChange={(e) => setConfig({ ...config, domainContextPath: e.target.value })}
-                    placeholder="C:\Projects\MyApp\domain-context.md"
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                  />
-                  <p className="mt-1 text-sm text-gray-500">
-                    Path to a file containing domain context (features, workflows, terminology). 
-                    Supports .txt, .md, or .json formats. This helps AI generate more accurate, domain-specific test documentation.
-                  </p>
-                  {config.domainContextPath && (
-                    <div className="mt-2 flex items-center gap-2 px-3 py-2 rounded-lg bg-blue-50 border border-blue-200">
-                      <FileText className="w-4 h-4 text-blue-600" />
-                      <p className="text-xs text-blue-800">
-                        Domain context will be used to enhance documentation generation
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                  <div className="flex items-start gap-2">
+                    <FileText className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="text-sm font-medium text-blue-900">Domain Context File</p>
+                      <p className="text-xs text-blue-700 mt-1">
+                        When you use "Suggest Context Updates", the system will automatically look for <code className="bg-blue-100 px-1 rounded">domain-context.md</code> in your repository root. 
+                        If found, it will be used to enhance context suggestions. You can create or update it after analyzing your tests.
                       </p>
                     </div>
-                  )}
+                  </div>
                 </div>
 
                 <div className="flex gap-3 pt-4">
@@ -1080,6 +1166,71 @@ export default function App() {
                     <p className="text-sm text-blue-800">
                       Scanning for tests without ADO test case IDs...
                     </p>
+                  </div>
+                )}
+
+                {/* File Selector Modal */}
+                {showFileSelector && testFilesList && (
+                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[80vh] flex flex-col">
+                      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                        <h3 className="text-lg font-semibold text-gray-900">Select Test Files for Analysis</h3>
+                        <button
+                          onClick={() => {
+                            setShowFileSelector(false);
+                            setSelectedFilePaths(new Set());
+                          }}
+                          className="text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto p-6">
+                        {testFilesList.files.length === 0 ? (
+                          <p className="text-gray-500 text-center py-8">No test files found in repository</p>
+                        ) : (
+                          <FileTree
+                            tree={testFilesList.tree}
+                            files={testFilesList.files}
+                            selectedFilePaths={selectedFilePaths}
+                            onToggleFile={toggleFileSelection}
+                          />
+                        )}
+                      </div>
+                      <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between">
+                        <p className="text-sm text-gray-600">
+                          {selectedFilePaths.size} file{selectedFilePaths.size !== 1 ? 's' : ''} selected
+                        </p>
+                        <div className="flex gap-3">
+                          <button
+                            onClick={() => {
+                              setShowFileSelector(false);
+                              setSelectedFilePaths(new Set());
+                            }}
+                            className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={handleAnalyzeSelectedFiles}
+                            disabled={selectedFilePaths.size === 0 || isAnalyzingContext}
+                            className="px-4 py-2 text-sm bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors flex items-center gap-2"
+                          >
+                            {isAnalyzingContext ? (
+                              <>
+                                <Loader2 className="w-4 h-4 animate-spin" />
+                                Analyzing...
+                              </>
+                            ) : (
+                              <>
+                                <Lightbulb className="w-4 h-4" />
+                                Analyze Selected Files
+                              </>
+                            )}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 )}
 
@@ -1172,11 +1323,56 @@ export default function App() {
 
                       {contextSuggestions.suggestions.suggestedContextUpdates && (
                         <div>
-                          <h4 className="font-semibold text-gray-900 mb-2">Suggested Context Updates</h4>
+                          <div className="flex items-center justify-between mb-2">
+                            <h4 className="font-semibold text-gray-900">Suggested Context Updates</h4>
+                            <button
+                              onClick={handleSaveDomainContext}
+                              disabled={isSavingContext || contextSaveSuccess || !editedContextContent.trim()}
+                              className="flex items-center gap-2 px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                            >
+                              {isSavingContext ? (
+                                <>
+                                  <Loader2 className="w-4 h-4 animate-spin" />
+                                  Saving...
+                                </>
+                              ) : contextSaveSuccess ? (
+                                <>
+                                  <CheckCircle className="w-4 h-4" />
+                                  Saved!
+                                </>
+                              ) : (
+                                <>
+                                  <Save className="w-4 h-4" />
+                                  {contextSuggestions.analysisSummary.hasExistingContext ? 'Update' : 'Create'} domain-context.md
+                                </>
+                              )}
+                            </button>
+                          </div>
                           <div className="bg-gray-50 p-3 rounded border border-gray-200">
-                            <pre className="text-xs text-gray-700 whitespace-pre-wrap font-mono">
-                              {contextSuggestions.suggestions.suggestedContextUpdates}
-                            </pre>
+                            <textarea
+                              value={editedContextContent}
+                              onChange={(e) => {
+                                setEditedContextContent(e.target.value);
+                                // Clear success state when user edits content
+                                if (contextSaveSuccess) {
+                                  setContextSaveSuccess(false);
+                                }
+                              }}
+                              className="w-full h-64 p-3 text-sm text-gray-700 font-mono bg-white border border-gray-300 rounded focus:ring-2 focus:ring-amber-500 focus:border-transparent resize-y"
+                              placeholder="Edit the suggested context updates here..."
+                            />
+                            <p className="text-xs text-gray-500 mt-2">
+                              {contextSuggestions.analysisSummary.hasExistingContext ? (
+                                <>
+                                  The suggested context includes your existing content with new additions marked with <code className="bg-gray-200 px-1 rounded">&lt;!-- NEW --&gt;</code> comments. 
+                                  You can edit the content above and click the button to update the domain-context.md file in your repository root.
+                                </>
+                              ) : (
+                                <>
+                                  You can edit the suggested context above. Click the button to create the domain-context.md file in your repository root.
+                                </>
+                              )}
+                            </p>
                           </div>
                         </div>
                       )}
@@ -1437,9 +1633,9 @@ export default function App() {
                     </button>
                     <div className="flex gap-1">
                       <button
-                        onClick={() => handleWriteIdsToFiles(false)}
+                        onClick={handleWriteIdsToFiles}
                         disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
-                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-l-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
                       >
                         {isWritingIds ? (
                           <>
@@ -1453,32 +1649,31 @@ export default function App() {
                           </>
                         )}
                       </button>
-                      <button
-                        onClick={() => handleWriteIdsToFiles(true)}
-                        disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
-                        className="flex items-center gap-2 px-3 py-2 bg-blue-500 text-white rounded-r-lg hover:bg-blue-600 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors border-l border-blue-400"
-                        title="Review changes before applying (recommended for multiple IDs per file)"
-                      >
-                        <Settings className="w-4 h-4" />
-                      </button>
                     </div>
-                    <button
-                      onClick={handleCreateInAdo}
-                      disabled={isCreatingInAdo || !adoConfigured}
-                      className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                    >
-                      {isCreatingInAdo ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Creating in ADO...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-4 h-4" />
-                          Create in ADO
-                        </>
+                    <div className="flex items-center gap-2">
+                      <button
+                        onClick={handleCreateInAdo}
+                        disabled={isCreatingInAdo || !adoConfigured}
+                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                      >
+                        {isCreatingInAdo ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Creating in ADO...
+                          </>
+                        ) : (
+                          <>
+                            <CheckCircle className="w-4 h-4" />
+                            Create in ADO
+                          </>
+                        )}
+                      </button>
+                      {adoMockMode && (
+                        <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded font-medium border border-yellow-300" title="Mock mode is enabled - test cases will be simulated without creating them in ADO">
+                          🧪 MOCK MODE
+                        </span>
                       )}
-                    </button>
+                    </div>
                   </div>
                 </div>
 
@@ -1492,112 +1687,59 @@ export default function App() {
                       onChange={(e) => setAddTags(e.target.checked)}
                       className="mt-1 w-4 h-4 text-blue-600 bg-gray-100 border-gray-300 rounded focus:ring-blue-500 focus:ring-2"
                     />
-                    <div className="flex-1">
-                      <label htmlFor="addTags" className="text-sm font-medium text-blue-900 cursor-pointer">
-                        Add automation tags to test cases
-                      </label>
-                      <p className="text-xs text-blue-700 mt-1">
-                        When enabled, the "BTAF_Automation" tag will be added to all created test cases in Azure DevOps for easier identification and filtering.
-                      </p>
-                    </div>
+                    <label htmlFor="addTags" className="text-sm font-medium text-blue-900 cursor-pointer">
+                      Add tag: BTAF_Automation
+                    </label>
                   </div>
                 </div>
 
-                {/* Review Results Section */}
-                {reviewResults && reviewResults.length > 0 && (
-                  <div className="border border-amber-200 rounded-lg overflow-hidden">
-                    <div className="bg-amber-50 px-4 py-3 border-b border-amber-200">
-                      <h3 className="font-semibold text-gray-900 flex items-center gap-2">
-                        <Settings className="w-5 h-5 text-amber-600" />
-                        Files Requiring Review
-                      </h3>
-                      <p className="text-xs text-gray-600 mt-1">
-                        The following files contain multiple tests and require review before applying changes.
-                      </p>
-                    </div>
-                    <div className="p-4 space-y-4">
-                      {reviewResults.map((reviewFile, idx) => (
-                        <div key={idx} className="border border-gray-200 rounded-lg overflow-hidden">
-                          <div className="bg-gray-50 px-4 py-3 border-b border-gray-200">
-                            <div className="flex items-center justify-between">
-                              <div>
-                                <h4 className="font-medium text-gray-900">{reviewFile.fileName}</h4>
-                                <p className="text-xs text-gray-500">{reviewFile.filePath}</p>
-                                <p className="text-xs text-amber-600 mt-1">
-                                  {reviewFile.testsAffected} tests affected • {reviewFile.modifications?.length || 0} modifications
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                          <div className="p-4">
-                            <h5 className="text-sm font-semibold text-gray-700 mb-2">Proposed Changes:</h5>
-                            <div className="space-y-2">
-                              {reviewFile.modifications?.map((mod, modIdx) => (
-                                <div key={modIdx} className="bg-gray-50 p-3 rounded border border-gray-200">
-                                  <div className="flex items-center justify-between mb-2">
-                                    <span className="text-sm font-medium text-gray-900">{mod.testName}</span>
-                                    <span className="text-xs px-2 py-1 bg-blue-100 text-blue-700 rounded">
-                                      {mod.action}
-                                    </span>
-                                  </div>
-                                  <pre className="text-xs bg-gray-800 text-green-400 p-2 rounded font-mono overflow-x-auto">
-                                    + {mod.newLine.trim()}
-                                  </pre>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="flex gap-2 mt-4">
-                              <button
-                                onClick={() => handleApplyReviewedChanges([reviewFile])}
-                                disabled={isWritingIds}
-                                className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                              >
-                                <CheckCircle className="w-4 h-4" />
-                                Apply Changes
-                              </button>
-                              <button
-                                onClick={() => setReviewResults(reviewResults.filter((_, i) => i !== idx))}
-                                className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
-                              >
-                                Skip
-                              </button>
-                            </div>
-                          </div>
-                        </div>
-                      ))}
-                      <div className="flex gap-2">
-                        <button
-                          onClick={() => handleApplyReviewedChanges(reviewResults)}
-                          disabled={isWritingIds}
-                          className="flex items-center gap-2 px-6 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                        >
-                          <CheckCircle className="w-4 h-4" />
-                          Apply All Changes
-                        </button>
-                        <button
-                          onClick={() => setReviewResults(null)}
-                          className="flex items-center gap-2 px-6 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
-                        >
-                          Cancel Review
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                )}
-
                 {Object.entries(generatedDocs).map(([testName, doc]) => {
                   const testCaseId = createdTestCaseIds[testName];
+                  
+                  // Find the class name for this test from scanResults
+                  let className = '';
+                  if (scanResults) {
+                    scanResults.forEach(file => {
+                      file.testMethods.forEach(test => {
+                        if (test.name === testName) {
+                          className = file.className || '';
+                        }
+                      });
+                    });
+                  }
+                  
+                  // Build ADO link if testCaseId and ADO config exist
+                  let adoLink = null;
+                  if (testCaseId && adoConfig && adoConfig.organizationUrl && adoConfig.projectName) {
+                    const orgUrl = adoConfig.organizationUrl.replace(/\/$/, ''); // Remove trailing slash
+                    const projectName = adoConfig.projectName;
+                    adoLink = `${orgUrl}/${projectName}/_workitems/edit/${testCaseId}`;
+                  }
+                  
+                  const displayTitle = className ? `${className} - ${testName}` : testName;
+                  
                   return (
                     <div key={testName} className="border border-gray-200 rounded-lg overflow-hidden">
                       <div className={`px-4 py-3 border-b border-gray-200 ${testCaseId ? 'bg-green-50' : 'bg-gray-50'}`}>
                         <div className="flex items-center justify-between">
-                          <h3 className="font-semibold text-gray-900">{testName}</h3>
+                          <h3 className="font-semibold text-gray-900">{displayTitle}</h3>
                           {testCaseId && (
                             <div className="flex items-center gap-2">
                               <CheckCircle className="w-5 h-5 text-green-600" />
-                              <span className="text-sm font-medium text-green-700">
-                                Test Case ID: {testCaseId}
-                              </span>
+                              {adoLink ? (
+                                <a
+                                  href={adoLink}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-sm font-medium text-green-700 hover:text-green-800 hover:underline"
+                                >
+                                  Test Case ID: {testCaseId}
+                                </a>
+                              ) : (
+                                <span className="text-sm font-medium text-green-700">
+                                  Test Case ID: {testCaseId}
+                                </span>
+                              )}
                             </div>
                           )}
                         </div>

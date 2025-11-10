@@ -253,6 +253,8 @@ describe('FileParserService', () => {
       
       expect(result).toHaveLength(1);
       expect(result[0].testMethods).toHaveLength(1);
+      expect(result[0].className).toBe('TestClass');
+      expect(result[0].fileName).toBe('TestFile.cs');
     });
 
     it('should return empty array when no tests found', async () => {

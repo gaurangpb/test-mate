@@ -57,6 +57,7 @@ namespace MyTestAutomation.Tests.Authentication
             Assert.That(loginPage.GetValidationError(), Does.Contain("Username is required"), "Validation error should appear");
         }
 
+        [Property("ADOTestCaseId", "100001")]
         [Test]
         [Category("Smoke")]
         [Category("Feature")]

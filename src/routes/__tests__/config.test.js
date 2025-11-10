@@ -62,6 +62,7 @@ describe('Config Routes', () => {
 
       expect(response.body).toEqual({
         configured: false,
+        mockMode: false,
         config: null
       });
     });

@@ -68,6 +68,7 @@ namespace MyTestAutomation.Tests.Integration
                 "ADO endpoint should be available");
         }
 
+        [Property("ADOTestCaseId", "100000")]
         [Test]
         [Category("Integration")]
         [Category("External")]

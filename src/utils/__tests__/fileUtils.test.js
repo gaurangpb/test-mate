@@ -264,5 +264,210 @@ describe('FileUtils', () => {
       );
     });
   });
+
+  describe('readDomainContext', () => {
+    it('should return null when contextFilePath is not provided', async () => {
+      const result = await fileUtils.readDomainContext(null);
+      expect(result).toBeNull();
+    });
+
+    it('should return null when file does not exist', async () => {
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+
+      const result = await fileUtils.readDomainContext('/path/to/context.md');
+      expect(result).toBeNull();
+    });
+
+    it('should read markdown file successfully', async () => {
+      const content = '## Domain Context\n\nTest content';
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(content);
+
+      const result = await fileUtils.readDomainContext('/path/to/context.md');
+      expect(result).toBe(content);
+    });
+
+    it('should parse and format JSON file', async () => {
+      const jsonContent = '{"key": "value"}';
+      const formattedJson = JSON.stringify({ key: 'value' }, null, 2);
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(jsonContent);
+
+      const result = await fileUtils.readDomainContext('/path/to/context.json');
+      expect(result).toBe(formattedJson);
+    });
+
+    it('should handle invalid JSON gracefully', async () => {
+      const invalidJson = '{invalid json}';
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(invalidJson);
+
+      const result = await fileUtils.readDomainContext('/path/to/context.json');
+      expect(result).toBe(invalidJson); // Should return as plain text
+    });
+
+    it('should handle read errors', async () => {
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockRejectedValue(new Error('Permission denied'));
+
+      const result = await fileUtils.readDomainContext('/path/to/context.md');
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('saveDomainContext', () => {
+    it('should throw error when contextFilePath is missing', async () => {
+      await expect(fileUtils.saveDomainContext(null, 'content'))
+        .rejects.toThrow('Context file path and content are required');
+    });
+
+    it('should throw error when content is missing', async () => {
+      await expect(fileUtils.saveDomainContext('/path/to/context.md', null))
+        .rejects.toThrow('Context file path and content are required');
+    });
+
+    it('should create new file when it does not exist', async () => {
+      const content = '## New Context\n\nContent here';
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.saveDomainContext('/path/to/domain-context.md', content);
+
+      expect(result).toEqual({ created: true });
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        path.resolve('/path/to/domain-context.md'),
+        content,
+        'utf-8'
+      );
+    });
+
+    it('should replace existing file when it exists', async () => {
+      const content = '## Updated Context\n\nUpdated content here';
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.saveDomainContext('/path/to/domain-context.md', content);
+
+      expect(result).toEqual({ created: false });
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        path.resolve('/path/to/domain-context.md'),
+        content,
+        'utf-8'
+      );
+    });
+
+    it('should handle write errors', async () => {
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+      fs.writeFile = jest.fn().mockRejectedValue(new Error('Write failed'));
+
+      await expect(fileUtils.saveDomainContext('/path/to/domain-context.md', 'content'))
+        .rejects.toThrow('Write failed');
+    });
+
+    it('should save content with <!-- NEW --> comments removed (if any)', async () => {
+      const content = '## Context\n\n<!-- NEW -->\nNew item\n\nExisting item';
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.saveDomainContext('/path/to/domain-context.md', content);
+
+      expect(result).toEqual({ created: true });
+      // Note: Comment removal happens in the client, but we verify the method saves whatever content is passed
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        path.resolve('/path/to/domain-context.md'),
+        content,
+        'utf-8'
+      );
+    });
+  });
+
+  describe('mergeDomainContext', () => {
+    it('should throw error when contextFilePath is missing', async () => {
+      await expect(fileUtils.mergeDomainContext(null, 'content'))
+        .rejects.toThrow('Context file path and new content are required');
+    });
+
+    it('should throw error when newContent is missing', async () => {
+      await expect(fileUtils.mergeDomainContext('/path/to/context.md', null))
+        .rejects.toThrow('Context file path and new content are required');
+    });
+
+    it('should create new file when it does not exist', async () => {
+      const newContent = '## New Context\n\nContent here';
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.mergeDomainContext('/path/to/domain-context.md', newContent);
+
+      expect(result).toEqual({ created: true, merged: false });
+      expect(fs.writeFile).toHaveBeenCalledWith(
+        path.resolve('/path/to/domain-context.md'),
+        newContent,
+        'utf-8'
+      );
+    });
+
+    it('should merge new sections that do not exist', async () => {
+      const existingContent = '# Existing Context\n\n## Section 1\n\nContent 1';
+      const newContent = '## Section 2\n\nContent 2\n\n## Section 3\n\nContent 3';
+
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(existingContent);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.mergeDomainContext('/path/to/domain-context.md', newContent);
+
+      expect(result).toEqual({ created: false, merged: true, newSectionsCount: 2 });
+      expect(fs.writeFile).toHaveBeenCalled();
+      const writtenContent = fs.writeFile.mock.calls[0][1];
+      expect(writtenContent).toContain('# Existing Context');
+      expect(writtenContent).toContain('## Section 1');
+      expect(writtenContent).toContain('## Section 2');
+      expect(writtenContent).toContain('## Section 3');
+      expect(writtenContent).toContain('Content 2');
+      expect(writtenContent).toContain('Content 3');
+    });
+
+    it('should not duplicate existing sections', async () => {
+      const existingContent = '# Existing Context\n\n## Section 1\n\nContent 1';
+      const newContent = '## Section 1\n\nDifferent content\n\n## Section 2\n\nNew content';
+
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(existingContent);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.mergeDomainContext('/path/to/domain-context.md', newContent);
+
+      expect(result).toEqual({ created: false, merged: true, newSectionsCount: 1 });
+      const writeCall = fs.writeFile.mock.calls[0];
+      expect(writeCall[1]).toContain('## Section 2');
+      expect(writeCall[1]).not.toContain('Different content'); // Should not add duplicate Section 1
+    });
+
+    it('should append entire content when no headers found', async () => {
+      const existingContent = 'Existing content';
+      const newContent = 'New content without headers';
+
+      fsSync.existsSync = jest.fn().mockReturnValue(true);
+      fs.readFile = jest.fn().mockResolvedValue(existingContent);
+      fs.writeFile = jest.fn().mockResolvedValue();
+
+      const result = await fileUtils.mergeDomainContext('/path/to/domain-context.md', newContent);
+
+      expect(result).toEqual({ created: false, merged: true, newSectionsCount: 0 });
+      const writeCall = fs.writeFile.mock.calls[0];
+      expect(writeCall[1]).toContain('Existing content');
+      expect(writeCall[1]).toContain('---');
+      expect(writeCall[1]).toContain('New content without headers');
+    });
+
+    it('should handle write errors', async () => {
+      fsSync.existsSync = jest.fn().mockReturnValue(false);
+      fs.writeFile = jest.fn().mockRejectedValue(new Error('Write failed'));
+
+      await expect(fileUtils.mergeDomainContext('/path/to/domain-context.md', 'content'))
+        .rejects.toThrow('Write failed');
+    });
+  });
 });
 

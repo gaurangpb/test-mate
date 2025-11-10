@@ -70,12 +70,83 @@ router.post('/generate', async (req, res) => {
   }
 });
 
+// Get test files list for file selection
+router.post('/test-files-list', async (req, res) => {
+  const { fileParserService } = req.app.locals;
+  
+  try {
+    const { repoPath } = req.body;
+    
+    if (!repoPath) {
+      return res.status(400).json({ error: 'Repository path is required' });
+    }
+
+    console.log('Getting test files list for:', repoPath);
+
+    // Get all test files from repository
+    const testFiles = await fileParserService.findTestFiles(repoPath);
+    
+    if (testFiles.length === 0) {
+      return res.json({ files: [], tree: {} });
+    }
+
+    const path = require('path');
+    const resolvedRepoPath = path.resolve(repoPath);
+    
+    // Convert absolute paths to relative paths from repo root
+    const filesWithRelativePaths = testFiles.map(filePath => {
+      const relativePath = path.relative(resolvedRepoPath, filePath);
+      return {
+        absolutePath: filePath,
+        relativePath: relativePath.replace(/\\/g, '/'), // Normalize to forward slashes
+        fileName: path.basename(filePath)
+      };
+    });
+
+    // Build tree structure
+    const tree = {};
+    filesWithRelativePaths.forEach(file => {
+      const parts = file.relativePath.split('/');
+      let current = tree;
+      
+      for (let i = 0; i < parts.length - 1; i++) {
+        const part = parts[i];
+        if (!current[part]) {
+          current[part] = { type: 'directory', children: {} };
+        }
+        current = current[part].children;
+      }
+      
+      const fileName = parts[parts.length - 1];
+      if (!current[fileName]) {
+        current[fileName] = {
+          type: 'file',
+          absolutePath: file.absolutePath,
+          relativePath: file.relativePath,
+          fileName: file.fileName
+        };
+      }
+    });
+
+    res.json({
+      files: filesWithRelativePaths,
+      tree: tree
+    });
+  } catch (error) {
+    console.error('Get test files list error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      details: 'Check server logs for more information'
+    });
+  }
+});
+
 // Suggest domain context updates based on test analysis
 router.post('/suggest-context-updates', async (req, res) => {
   const { openaiService, fileParserService, fileUtils } = req.app.locals;
   
   try {
-    const { repoPath, domainContextPath, testPropertyName, limit = 50 } = req.body;
+    const { repoPath, selectedFilePaths, testPropertyName } = req.body;
     
     if (!openaiService.isConfigured()) {
       return res.status(400).json({ error: 'OpenAI client not configured' });
@@ -85,33 +156,40 @@ router.post('/suggest-context-updates', async (req, res) => {
       return res.status(400).json({ error: 'Repository path is required' });
     }
 
-    console.log('Suggest context updates endpoint called:', { repoPath, domainContextPath, limit });
+    if (!selectedFilePaths || selectedFilePaths.length === 0) {
+      return res.status(400).json({ error: 'At least one test file must be selected' });
+    }
 
-    // Read existing domain context if provided
+    console.log('Suggest context updates endpoint called:', { repoPath, selectedFilesCount: selectedFilePaths.length });
+
+    const path = require('path');
+    const fs = require('fs').promises;
+    const resolvedRepoPath = path.resolve(repoPath);
+    
+    // Automatically look for domain-context.md in repo root
+    const domainContextPath = path.join(resolvedRepoPath, 'domain-context.md');
     let existingContext = null;
-    if (domainContextPath) {
+    
+    try {
       existingContext = await fileUtils.readDomainContext(domainContextPath);
       if (existingContext) {
-        console.log(`Existing domain context loaded (${existingContext.length} characters)`);
+        console.log(`Existing domain context loaded from ${domainContextPath} (${existingContext.length} characters)`);
       }
+    } catch (contextError) {
+      console.log(`No existing domain context found at ${domainContextPath}`);
     }
 
-    // Get all tests from repository
-    const testFiles = await fileParserService.findTestFiles(repoPath);
-    
-    if (testFiles.length === 0) {
-      return res.status(400).json({ error: 'No test files found in repository' });
-    }
-
-    // Read test code from files (limit to avoid too large prompts)
+    // Read test code from selected files
     const tests = [];
-    const maxFiles = Math.min(testFiles.length, limit);
-    const fs = require('fs').promises;
-    const path = require('path');
     
-    for (let i = 0; i < maxFiles; i++) {
+    for (const filePath of selectedFilePaths) {
       try {
-        const fileContent = await fs.readFile(testFiles[i], 'utf-8');
+        // Resolve the path - could be absolute or relative
+        const resolvedPath = path.isAbsolute(filePath) 
+          ? filePath 
+          : path.join(resolvedRepoPath, filePath);
+        
+        const fileContent = await fs.readFile(resolvedPath, 'utf-8');
         
         // Extract all test methods (with or without IDs) by parsing the file
         const testAttributePattern = /\[Test(?:\s*,|\s*\])/g;
@@ -138,12 +216,13 @@ router.post('/suggest-context-updates', async (req, res) => {
             tests.push({
               name: methodName,
               code: methodCode,
-              fileName: path.basename(testFiles[i])
+              fileName: path.basename(resolvedPath),
+              filePath: path.relative(resolvedRepoPath, resolvedPath).replace(/\\/g, '/')
             });
           }
         }
       } catch (fileError) {
-        console.warn(`Error reading test file ${testFiles[i]}: ${fileError.message}`);
+        console.warn(`Error reading test file ${filePath}: ${fileError.message}`);
       }
     }
     
@@ -175,7 +254,7 @@ router.post('/suggest-context-updates', async (req, res) => {
       return res.status(400).json({ error: 'No test methods found to analyze' });
     }
 
-    console.log(`Analyzing ${tests.length} test(s) for domain concepts`);
+    console.log(`Analyzing ${tests.length} test(s) from ${selectedFilePaths.length} file(s) for domain concepts`);
 
     // Extract domain concepts using AI
     const suggestions = await openaiService.extractDomainConcepts(tests, existingContext);
@@ -184,13 +263,52 @@ router.post('/suggest-context-updates', async (req, res) => {
       suggestions,
       analysisSummary: {
         testsAnalyzed: tests.length,
-        filesAnalyzed: maxFiles,
-        totalTestFiles: testFiles.length,
-        hasExistingContext: !!existingContext
+        filesAnalyzed: selectedFilePaths.length,
+        hasExistingContext: !!existingContext,
+        domainContextPath: existingContext ? domainContextPath : null
       }
     });
   } catch (error) {
     console.error('Suggest context updates error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      details: 'Check server logs for more information'
+    });
+  }
+});
+
+// Save/update domain context file
+router.post('/save-domain-context', async (req, res) => {
+  const { fileUtils } = req.app.locals;
+  
+  try {
+    const { repoPath, content } = req.body;
+    
+    if (!repoPath) {
+      return res.status(400).json({ error: 'Repository path is required' });
+    }
+
+    if (!content) {
+      return res.status(400).json({ error: 'Content is required' });
+    }
+
+    const path = require('path');
+    const resolvedRepoPath = path.resolve(repoPath);
+    const domainContextPath = path.join(resolvedRepoPath, 'domain-context.md');
+
+    console.log(`Saving domain context to: ${domainContextPath}`);
+
+    // Since the user has edited the full content in the textarea, 
+    // we should replace the entire file rather than trying to merge
+    const result = await fileUtils.saveDomainContext(domainContextPath, content);
+
+    res.json({
+      success: true,
+      filePath: domainContextPath,
+      ...result
+    });
+  } catch (error) {
+    console.error('Save domain context error:', error);
     res.status(500).json({ 
       error: error.message,
       details: 'Check server logs for more information'

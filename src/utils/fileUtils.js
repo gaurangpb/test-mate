@@ -105,7 +105,7 @@ class FileUtils {
     }
   }
 
-  async writeTestIdsToFiles(testCaseIds, testPropertyName, reviewMode = false) {
+  async writeTestIdsToFiles(testCaseIds, testPropertyName) {
     const results = [];
     const propertyName = testPropertyName || 'ADOTestCaseId';
 
@@ -125,8 +125,7 @@ class FileUtils {
     for (const [filePath, tests] of Object.entries(fileGroups)) {
       try {
         // Read the file
-        const originalContent = await fs.readFile(filePath, 'utf-8');
-        let content = originalContent;
+        const content = await fs.readFile(filePath, 'utf-8');
         let fileModified = false;
         const modifications = [];
 
@@ -157,24 +156,6 @@ class FileUtils {
           } else if (mod.type === 'replace') {
             lines[mod.lineIndex] = mod.newLine;
           }
-        }
-
-        // If in review mode, provide preview (always if explicitly requested, or for files with multiple tests)
-        if (reviewMode) {
-          const preview = this._generatePreview(originalContent, lines.join('\n'), modifications);
-          results.push({
-            filePath: filePath,
-            fileName: path.basename(filePath),
-            success: false,
-            needsReview: true,
-            testsAffected: tests.length,
-            modifications: modifications,
-            preview: preview,
-            message: tests.length > 1 
-              ? `Multiple tests found in file. Review recommended before applying changes.`
-              : `Review requested for file changes.`
-          });
-          continue;
         }
 
         // Write the file back if modified
@@ -293,24 +274,6 @@ class FileUtils {
   }
 
   /**
-   * Generate a preview of changes for review
-   * @private
-   */
-  _generatePreview(originalContent, newContent, modifications) {
-    const preview = {
-      original: originalContent,
-      modified: newContent,
-      changes: modifications.map(mod => ({
-        testName: mod.testName,
-        action: mod.action,
-        line: mod.newLine.trim()
-      }))
-    };
-    
-    return preview;
-  }
-
-  /**
    * Read domain context file for AI documentation generation
    * Supports multiple formats: .txt, .md, .json
    * @param {string} contextFilePath - Path to domain context file
@@ -349,6 +312,127 @@ class FileUtils {
       console.error(`Error reading domain context file: ${error.message}`);
       return null;
     }
+  }
+
+  /**
+   * Save domain context file (replace entire file with new content)
+   * @param {string} contextFilePath - Path to domain context file
+   * @param {string} content - Content to save
+   * @returns {Promise<{created: boolean}>} - Result of the operation
+   */
+  async saveDomainContext(contextFilePath, content) {
+    if (!contextFilePath || !content) {
+      throw new Error('Context file path and content are required');
+    }
+
+    try {
+      const fullPath = path.resolve(contextFilePath);
+      const exists = fsSync.existsSync(fullPath);
+      
+      // Simply write the content to the file (replace entire file)
+      await fs.writeFile(fullPath, content, 'utf-8');
+      
+      return { created: !exists };
+    } catch (error) {
+      console.error(`Error saving domain context file: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Intelligently merge new context content with existing domain context
+   * @param {string} contextFilePath - Path to domain context file
+   * @param {string} newContent - New content to merge
+   * @returns {Promise<{created: boolean, merged: boolean}>} - Result of the operation
+   */
+  async mergeDomainContext(contextFilePath, newContent) {
+    if (!contextFilePath || !newContent) {
+      throw new Error('Context file path and new content are required');
+    }
+
+    try {
+      const fullPath = path.resolve(contextFilePath);
+      const exists = fsSync.existsSync(fullPath);
+      
+      if (!exists) {
+        // Create new file
+        await fs.writeFile(fullPath, newContent, 'utf-8');
+        return { created: true, merged: false };
+      }
+
+      // Read existing content
+      const existingContent = await fs.readFile(fullPath, 'utf-8');
+      
+      // Simple merge strategy: append new sections if they don't already exist
+      // Look for markdown headers in new content
+      const newHeaders = this._extractMarkdownHeaders(newContent);
+      const existingHeaders = this._extractMarkdownHeaders(existingContent);
+      
+      // Find sections that don't exist in existing content
+      const newSections = [];
+      const newContentLines = newContent.split('\n');
+      let currentSection = null;
+      let inNewSection = false;
+      let sectionLines = [];
+      
+      for (let i = 0; i < newContentLines.length; i++) {
+        const line = newContentLines[i];
+        const headerMatch = line.match(/^(#{1,6})\s+(.+)$/);
+        
+        if (headerMatch) {
+          // Save previous section if it was new
+          if (inNewSection && currentSection && !existingHeaders.has(currentSection.toLowerCase())) {
+            newSections.push(sectionLines.join('\n'));
+          }
+          
+          // Start new section
+          const headerText = headerMatch[2].trim().toLowerCase();
+          currentSection = headerText;
+          inNewSection = !existingHeaders.has(headerText);
+          sectionLines = [line];
+        } else if (inNewSection) {
+          sectionLines.push(line);
+        }
+      }
+      
+      // Save last section if it was new
+      if (inNewSection && currentSection && !existingHeaders.has(currentSection.toLowerCase())) {
+        newSections.push(sectionLines.join('\n'));
+      }
+      
+      // Merge: append new sections to existing content
+      let mergedContent = existingContent.trim();
+      if (newSections.length > 0) {
+        mergedContent += '\n\n' + newSections.join('\n\n');
+      } else {
+        // If no new sections found, append the entire new content as a new section
+        mergedContent += '\n\n---\n\n' + newContent;
+      }
+      
+      await fs.writeFile(fullPath, mergedContent, 'utf-8');
+      return { created: false, merged: true, newSectionsCount: newSections.length };
+    } catch (error) {
+      console.error(`Error merging domain context file: ${error.message}`);
+      throw error;
+    }
+  }
+
+  /**
+   * Extract markdown headers from content
+   * @private
+   */
+  _extractMarkdownHeaders(content) {
+    const headers = new Set();
+    const lines = content.split('\n');
+    
+    for (const line of lines) {
+      const match = line.match(/^#{1,6}\s+(.+)$/);
+      if (match) {
+        headers.add(match[1].trim().toLowerCase());
+      }
+    }
+    
+    return headers;
   }
 }
 

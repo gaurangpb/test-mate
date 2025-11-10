@@ -65,6 +65,14 @@ class ADOService {
   }
 
   async createTestCases(testCases, adoConfig, addTags = false) {
+    // Check if mock mode is enabled
+    const mockMode = process.env.ADO_MOCK_MODE === 'true' || process.env.ADO_MOCK_MODE === '1';
+    
+    if (mockMode) {
+      console.log('ADO Mock Mode enabled - simulating test case creation');
+      return this.createTestCasesMock(testCases, addTags);
+    }
+
     const results = [];
 
     for (const testCase of testCases) {
@@ -92,6 +100,44 @@ class ADOService {
           testCaseId: null,
           success: false,
           error: error.message
+        });
+      }
+    }
+
+    return results;
+  }
+
+  async createTestCasesMock(testCases, addTags = false) {
+    // Simulate network delay
+    await new Promise(resolve => setTimeout(resolve, 500));
+    
+    const results = [];
+    let mockIdCounter = 100000; // Start with a high mock ID to avoid conflicts
+
+    for (const testCase of testCases) {
+      // Simulate occasional failures (5% chance) for realism
+      const shouldFail = Math.random() < 0.05;
+      
+      if (shouldFail) {
+        console.log(`[MOCK] Simulated failure for test case: ${testCase.testName}`);
+        results.push({
+          testName: testCase.testName,
+          fileName: testCase.fileName,
+          filePath: testCase.filePath || '',
+          testCaseId: null,
+          success: false,
+          error: 'Mock mode: Simulated API failure'
+        });
+      } else {
+        const mockTestCaseId = mockIdCounter++;
+        console.log(`[MOCK] Simulated creation of test case ${mockTestCaseId} for ${testCase.testName}`);
+        
+        results.push({
+          testName: testCase.testName,
+          fileName: testCase.fileName,
+          filePath: testCase.filePath || '',
+          testCaseId: mockTestCaseId.toString(),
+          success: true
         });
       }
     }
