@@ -60,6 +60,7 @@ namespace MyTestAutomation.Tests.UI.OnlineBanking
             Assert.That(olbPage.IsTravelNotificationSubmitted(), Is.True, "Travel notification should be submitted");
         }
 
+        [Property("ADOTestCaseId", "100000")]
         [Test, HUST]
         public async Task OlbLoginTest()
         {

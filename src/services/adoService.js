@@ -64,13 +64,13 @@ class ADOService {
     });
   }
 
-  async createTestCases(testCases, adoConfig, addTags = false) {
+  async createTestCases(testCases, adoConfig, addTags = false, testTagsMap = {}) {
     // Check if mock mode is enabled
     const mockMode = process.env.ADO_MOCK_MODE === 'true' || process.env.ADO_MOCK_MODE === '1';
     
     if (mockMode) {
       console.log('ADO Mock Mode enabled - simulating test case creation');
-      return this.createTestCasesMock(testCases, addTags);
+      return this.createTestCasesMock(testCases, addTags, testTagsMap);
     }
 
     const results = [];
@@ -79,7 +79,13 @@ class ADOService {
       try {
         console.log(`Creating test case for: ${testCase.testName}`);
         
-        const testCaseId = await this.createTestCaseInADO(testCase, adoConfig, addTags);
+        // Get custom tags for this test case if any (from manual scenarios)
+        const customTags = testTagsMap[testCase.testName] || [];
+        if (customTags.length > 0) {
+          console.log(`Found ${customTags.length} custom tag(s) for "${testCase.testName}": ${customTags.join(", ")}`);
+        }
+        
+        const testCaseId = await this.createTestCaseInADO(testCase, adoConfig, addTags, customTags);
         
         results.push({
           testName: testCase.testName,
@@ -107,7 +113,7 @@ class ADOService {
     return results;
   }
 
-  async createTestCasesMock(testCases, addTags = false) {
+  async createTestCasesMock(testCases, addTags = false, testTagsMap = {}) {
     // Simulate network delay
     await new Promise(resolve => setTimeout(resolve, 500));
     
@@ -145,7 +151,7 @@ class ADOService {
     return results;
   }
 
-  async createTestCaseInADO(testCase, adoConfig, addTags = false) {
+  async createTestCaseInADO(testCase, adoConfig, addTags = false, customTags = []) {
     return new Promise((resolve, reject) => {
       try {
         // Format the test steps for ADO
@@ -190,12 +196,28 @@ class ADOService {
           }
         ];
 
-        // Add tags if requested
+        // Build tags array - include default tag if addTags is true, and always include custom tags from manual scenarios
+        const tags = [];
         if (addTags) {
+          tags.push("BTAF_Automation");
+        }
+        // Always include custom tags from manual scenarios (even if addTags is false)
+        if (customTags && Array.isArray(customTags) && customTags.length > 0) {
+          // Filter out duplicates and add custom tags
+          customTags.forEach(tag => {
+            if (tag && tag.trim() && !tags.includes(tag.trim())) {
+              tags.push(tag.trim());
+            }
+          });
+        }
+
+        // Add tags if any
+        if (tags.length > 0) {
+          console.log(`Adding tags for test case "${testCase.testName}": ${tags.join(", ")}`);
           workItemData.push({
             "op": "add",
             "path": "/fields/System.Tags",
-            "value": "BTAF_Automation"
+            "value": tags.join("; ")
           });
         }
 

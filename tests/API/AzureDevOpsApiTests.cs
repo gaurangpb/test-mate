@@ -20,6 +20,7 @@ namespace MyTestAutomation.Tests.API
             httpClient.BaseAddress = new Uri(baseUrl);
         }
 
+        [Property("ADOTestCaseId", "100001")]
         [Test]
         [Category("API")]
         [Category("ADO")]

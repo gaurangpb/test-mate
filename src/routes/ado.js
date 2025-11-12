@@ -10,7 +10,7 @@ router.post('/create-test-cases', async (req, res) => {
   const { adoService, fileUtils } = req.app.locals;
   
   try {
-    const { testCases, generateMappingFile, mappingFilePath, addTags } = req.body;
+    const { testCases, generateMappingFile, mappingFilePath, addTags, testTagsMap } = req.body;
     
     if (!testCases || testCases.length === 0) {
       return res.status(400).json({ error: 'No test cases provided' });
@@ -36,7 +36,7 @@ router.post('/create-test-cases', async (req, res) => {
     console.log(`Creating ${testCases.length} test cases in Azure DevOps...`);
     console.log(`ADO Config: ${adoConfig.organizationUrl}/${adoConfig.projectName} (Plan: ${adoConfig.testPlanId}, Suite: ${adoConfig.testSuiteId})`);
 
-    const results = await adoService.createTestCases(testCases, adoConfig, addTags);
+    const results = await adoService.createTestCases(testCases, adoConfig, addTags, testTagsMap || {});
 
     // Optionally generate mapping file
     let mappingFileInfo = null;

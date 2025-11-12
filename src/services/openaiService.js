@@ -270,6 +270,129 @@ ${JSON.stringify(testSamples, null, 2)}`;
       };
     }
   }
+
+  /**
+   * Generate test steps from a manual test description
+   * @param {string} testName - Name of the test case
+   * @param {string} description - Description or requirements for the test
+   * @param {string} bulletPoints - Optional bullet points or additional context
+   * @param {string} domainContext - Optional domain context for better generation
+   * @returns {Promise<Object>} - Generated test documentation with description and steps
+   */
+  async generateManualTestSteps(testName, description, bulletPoints = null, domainContext = null) {
+    if (!this.client) {
+      throw new Error('OpenAI client not configured');
+    }
+
+    let prompt = `You are a QA documentation expert. Generate comprehensive test documentation for a manual test case based on the following information.`;
+
+    // Add domain context if provided
+    if (domainContext) {
+      prompt += `\n\n=== APPLICATION DOMAIN CONTEXT ===\nThe following information describes the application's domain, features, workflows, and terminology. Use this context to generate more accurate, domain-specific test documentation:\n\n${domainContext}\n\n=== END DOMAIN CONTEXT ===\n`;
+    }
+
+    prompt += `\nTest Name: ${testName}\n\nTest Description/Requirements:\n${description}`;
+
+    if (bulletPoints && bulletPoints.trim()) {
+      prompt += `\n\nAdditional Context/Bullet Points:\n${bulletPoints}`;
+    }
+
+    prompt += `\n\nPlease provide:\n\n1. A narrative description (2-3 sentences) explaining what business scenario this test validates. Focus on the user perspective and business value.`;
+
+    if (domainContext) {
+      prompt += ` Use the domain context provided above to ensure the description uses correct domain terminology and reflects actual user workflows.`;
+    }
+
+    prompt += `\n\n2. Detailed test steps in the format of Action and Expected Result pairs. Each step should be clear and testable. Include steps for setup, execution, and verification.`;
+
+    if (domainContext) {
+      prompt += ` Reference the domain context to ensure steps align with actual application workflows and use proper domain terminology.`;
+    }
+
+    prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "description": "Your narrative description here",\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:\n- Make the description business-focused and user-centric`;
+
+    if (domainContext) {
+      prompt += `\n- Use domain-specific terminology from the context provided above`;
+      prompt += `\n- Ensure test steps reflect actual user journeys and workflows described in the context`;
+    }
+
+    prompt += `\n- Steps should be clear enough for manual testing\n- Include verification steps based on the requirements provided\n- Keep technical jargon minimal in the description\n- Number of steps should match the logical flow of the test (typically 3-10 steps)\n- Each step should be actionable and testable`;
+
+    try {
+      console.log(`Generating manual test steps for: ${testName}`);
+      
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a QA documentation expert who creates clear, comprehensive test documentation from manual test descriptions. Always respond with valid JSON.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+        response_format: { type: 'json_object' }
+      });
+
+      const content = response.choices[0].message.content;
+      console.log(`OpenAI response for manual test ${testName}:`, content);
+      
+      try {
+        const parsedContent = JSON.parse(content);
+        return parsedContent;
+      } catch (parseError) {
+        console.error(`JSON parse error for manual test ${testName}:`, parseError);
+        console.error(`Raw content:`, content);
+        
+        return {
+          description: `Manual test case: ${testName}. ${description}`,
+          steps: [
+            {
+              action: "Review the test requirements",
+              expectedResult: "Requirements are understood"
+            },
+            {
+              action: "Execute the test scenario",
+              expectedResult: "Test scenario is executed as described"
+            },
+            {
+              action: "Verify the results",
+              expectedResult: "Results match expected outcomes"
+            }
+          ]
+        };
+      }
+    } catch (error) {
+      console.error(`Error generating manual test steps for ${testName}:`, error);
+      
+      if (error.response) {
+        console.error('OpenAI API Error Status:', error.response.status);
+        console.error('OpenAI API Error Data:', error.response.data);
+      }
+      
+      return {
+        description: `Manual test case: ${testName}. ${description}`,
+        steps: [
+          {
+            action: "Review the test requirements",
+            expectedResult: "Requirements are understood"
+          },
+          {
+            action: "Execute the test scenario",
+            expectedResult: "Test scenario is executed as described"
+          },
+          {
+            action: "Verify the results",
+            expectedResult: "Results match expected outcomes"
+          }
+        ]
+      };
+    }
+  }
 }
 
 module.exports = OpenAIService;

@@ -160,6 +160,39 @@ class FileParserService {
       ? Math.round((testsWithAdoId / totalTests) * 100) 
       : 0;
 
+    // Detect duplicate IDs
+    const idToTestsMap = new Map();
+    allTests.forEach(test => {
+      if (test.hasTestCaseId && test.adoId) {
+        if (!idToTestsMap.has(test.adoId)) {
+          idToTestsMap.set(test.adoId, []);
+        }
+        idToTestsMap.get(test.adoId).push({
+          name: test.name,
+          className: test.className,
+          filePath: test.filePath,
+          fileName: test.fileName,
+          tags: test.tags,
+          adoId: test.adoId
+        });
+      }
+    });
+
+    // Find duplicates (IDs that appear more than once)
+    const duplicateIds = [];
+    idToTestsMap.forEach((tests, adoId) => {
+      if (tests.length > 1) {
+        duplicateIds.push({
+          adoId: adoId,
+          count: tests.length,
+          tests: tests
+        });
+      }
+    });
+
+    // Sort duplicates by count (most duplicates first)
+    duplicateIds.sort((a, b) => b.count - a.count);
+
     return {
       totalTests,
       testsWithAdoId,
@@ -171,11 +204,14 @@ class FileParserService {
         coveragePercent,
         totalClasses: classStatsArray.length,
         totalFiles: totalFilesWithTests,
-        totalTags: tagStatsArray.length
+        totalTags: tagStatsArray.length,
+        duplicateIdsCount: duplicateIds.length,
+        duplicateTestsCount: duplicateIds.reduce((sum, dup) => sum + dup.count, 0)
       },
       byClass: classStatsArray.sort((a, b) => b.totalTests - a.totalTests),
       byTag: tagStatsArray,
-      allTests: allTests
+      allTests: allTests,
+      duplicateIds: duplicateIds
     };
   }
 
@@ -246,10 +282,38 @@ class FileParserService {
     while ((match = this.TEST_METHOD_PATTERN.exec(cleanContent)) !== null) {
       const fullMethod = match[0];
       const methodName = match[2];
+      const testAttrIndex = match.index;
       
       console.log(`DEBUG: Found test method: ${methodName}`);
       
-      const hasTestCaseId = testPropertyPattern.test(fullMethod);
+      // Check for property in the matched method (after [Test])
+      let hasTestCaseId = testPropertyPattern.test(fullMethod);
+      
+      // If not found, look backwards from [Test] attribute to find Property attributes
+      // Look up to 500 characters before the [Test] attribute
+      if (!hasTestCaseId && testAttrIndex > 0) {
+        const lookbackStart = Math.max(0, testAttrIndex - 500);
+        const textBeforeTest = cleanContent.substring(lookbackStart, testAttrIndex);
+        
+        // Find the last method end before this test to avoid picking up IDs from previous tests
+        const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
+        let lastMethodEnd = -1;
+        let methodMatch;
+        
+        while ((methodMatch = methodPattern.exec(textBeforeTest)) !== null) {
+          lastMethodEnd = lookbackStart + methodMatch.index + methodMatch[0].length;
+        }
+        
+        // Search in the section between the last method end and the current test
+        const searchStart = lastMethodEnd > -1 ? lastMethodEnd : lookbackStart;
+        const attrSection = cleanContent.substring(searchStart, testAttrIndex + fullMethod.length);
+        
+        hasTestCaseId = testPropertyPattern.test(attrSection);
+        
+        if (hasTestCaseId) {
+          console.log(`DEBUG: Method ${methodName} found Property attribute before [Test]`);
+        }
+      }
       
       console.log(`DEBUG: Method ${methodName} has TestCaseId: ${hasTestCaseId}`);
       if (hasTestCaseId) {

@@ -37,6 +37,7 @@ namespace MyTestAutomation.Tests.API
             Assert.That(configured.ValueKind, Is.EqualTo(JsonValueKind.True).Or.EqualTo(JsonValueKind.False), "Configured should be a boolean");
         }
 
+        [Property("ADOTestCaseId", "100000")]
         [Test]
         [Category("API")]
         [Category("Configuration")]
@@ -57,6 +58,7 @@ namespace MyTestAutomation.Tests.API
             Assert.That(success.GetBoolean(), Is.True, "Success should be true");
         }
 
+        [Property("ADOTestCaseId", "100000")]
         [Test]
         [Category("API")]
         [Category("Negative")]
@@ -77,6 +79,7 @@ namespace MyTestAutomation.Tests.API
             Assert.That(error.GetString(), Does.Contain("API key is required"), "Error message should indicate API key is required");
         }
 
+        [Property("ADOTestCaseId", "100000")]
         [Test]
         [Category("API")]
         [Category("Regression")]
@@ -96,6 +99,7 @@ namespace MyTestAutomation.Tests.API
             Assert.That(jsonResponse.TryGetProperty("results", out var results), Is.True, "Response should contain 'results' array");
             Assert.That(results.ValueKind, Is.EqualTo(JsonValueKind.Array), "Results should be an array");
         }
+        [Property("ADOTestCaseId", "100001")]
 
         [Test]
         [Category("API")]

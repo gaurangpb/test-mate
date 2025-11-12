@@ -316,4 +316,73 @@ router.post('/save-domain-context', async (req, res) => {
   }
 });
 
+// Generate test steps from manual test description
+router.post('/generate/manual', async (req, res) => {
+  const { openaiService, fileUtils } = req.app.locals;
+  
+  try {
+    const { testName, description, bulletPoints, repoPath } = req.body;
+    
+    console.log('Manual test generation endpoint called with:', { 
+      testName,
+      descriptionLength: description?.length,
+      bulletPointsLength: bulletPoints?.length,
+      repoPath: repoPath || 'none'
+    });
+    
+    if (!openaiService.isConfigured()) {
+      console.error('OpenAI client not configured');
+      return res.status(400).json({ error: 'OpenAI client not configured' });
+    }
+
+    if (!testName || !testName.trim()) {
+      console.error('Test name is required');
+      return res.status(400).json({ error: 'Test name is required' });
+    }
+
+    if (!description || !description.trim()) {
+      console.error('Description is required');
+      return res.status(400).json({ error: 'Description is required' });
+    }
+
+    // Read domain context if repoPath is provided
+    let domainContext = null;
+    if (repoPath) {
+      try {
+        const path = require('path');
+        const resolvedRepoPath = path.resolve(repoPath);
+        const domainContextPath = path.join(resolvedRepoPath, 'domain-context.md');
+        domainContext = await fileUtils.readDomainContext(domainContextPath);
+        if (domainContext) {
+          console.log(`Domain context loaded from: ${domainContextPath} (${domainContext.length} characters)`);
+        }
+      } catch (contextError) {
+        console.warn(`Failed to load domain context: ${contextError.message}`);
+        // Continue without context rather than failing
+      }
+    }
+
+    console.log(`Generating manual test steps for: ${testName}${domainContext ? ' with domain context' : ''}`);
+
+    const generatedDoc = await openaiService.generateManualTestSteps(
+      testName.trim(),
+      description.trim(),
+      bulletPoints ? bulletPoints.trim() : null,
+      domainContext
+    );
+
+    console.log(`Manual test generation completed for: ${testName}`);
+    res.json({ 
+      generatedDoc,
+      usedDomainContext: !!domainContext
+    });
+  } catch (error) {
+    console.error('Manual test generation endpoint error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      details: 'Check server logs for more information'
+    });
+  }
+});
+
 module.exports = router;

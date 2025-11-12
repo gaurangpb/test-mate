@@ -284,6 +284,19 @@ export default function App() {
   const [editedContextContent, setEditedContextContent] = useState('');
   const [isSavingContext, setIsSavingContext] = useState(false);
   const [contextSaveSuccess, setContextSaveSuccess] = useState(false);
+  const [showManualTestModal, setShowManualTestModal] = useState(false);
+  const [manualTestName, setManualTestName] = useState('');
+  const [manualTestDescription, setManualTestDescription] = useState('');
+  const [expandedDuplicateId, setExpandedDuplicateId] = useState(null); // Track which duplicate ID is expanded
+  const [manualTestBulletPoints, setManualTestBulletPoints] = useState('');
+  const [manualTestTags, setManualTestTags] = useState('');
+  const [manualTestTagsArray, setManualTestTagsArray] = useState([]);
+  const [isGeneratingManual, setIsGeneratingManual] = useState(false);
+  const [manualTests, setManualTests] = useState(new Set()); // Track which tests are manual (no file write-back)
+  const [testTags, setTestTags] = useState({}); // Store tags per test: { testName: ['tag1', 'tag2'] }
+  const [selectedForAdo, setSelectedForAdo] = useState(new Set()); // Tests selected for ADO creation
+  const [selectedForFileWrite, setSelectedForFileWrite] = useState(new Set()); // Tests selected for file write-back
+  const [writtenToFiles, setWrittenToFiles] = useState(new Set()); // Track which tests have been written to files
 
   // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
@@ -532,6 +545,107 @@ export default function App() {
     }
   };
 
+  const handleManualTestTagInput = (e) => {
+    const value = e.target.value;
+    setManualTestTags(value);
+    
+    // Parse tags from comma-separated input
+    if (value.trim()) {
+      const tags = value.split(',').map(tag => tag.trim()).filter(tag => tag.length > 0);
+      setManualTestTagsArray(tags);
+    } else {
+      setManualTestTagsArray([]);
+    }
+  };
+
+  const removeManualTestTag = (tagToRemove) => {
+    const newTags = manualTestTagsArray.filter(tag => tag !== tagToRemove);
+    setManualTestTagsArray(newTags);
+    setManualTestTags(newTags.join(', '));
+  };
+
+  const handleGenerateManualTest = async () => {
+    if (!openAiConfigured) {
+      setError('Please configure OpenAI API key first');
+      return;
+    }
+
+    if (!manualTestName.trim()) {
+      setError('Test name is required');
+      return;
+    }
+
+    if (!manualTestDescription.trim()) {
+      setError('Description is required');
+      return;
+    }
+
+    setIsGeneratingManual(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/generate/manual`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testName: manualTestName.trim(),
+          description: manualTestDescription.trim(),
+          bulletPoints: manualTestBulletPoints.trim() || null,
+          repoPath: config.repoPath || null
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to generate manual test steps');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      
+      // Add the generated test to generatedDocs
+      const testName = manualTestName.trim();
+      setGeneratedDocs(prev => ({
+        ...prev,
+        [testName]: data.generatedDoc
+      }));
+      
+      // Mark this as a manual test (no file write-back)
+      setManualTests(prev => new Set([...prev, testName]));
+      
+      // Store tags for this manual test (we'll use this when creating in ADO)
+      if (manualTestTagsArray.length > 0) {
+        setTestTags(prev => ({
+          ...prev,
+          [testName]: manualTestTagsArray
+        }));
+      }
+      
+      // Initialize selection - select for ADO (not for file write since it's manual)
+      setSelectedForAdo(prev => new Set([...prev, testName]));
+      
+      // Reset form
+      setShowManualTestModal(false);
+      setManualTestName('');
+      setManualTestDescription('');
+      setManualTestBulletPoints('');
+      setManualTestTags('');
+      setManualTestTagsArray([]);
+      
+      if (data.usedDomainContext) {
+        setSuccessMessage('Manual test steps generated with domain context!');
+      } else {
+        setSuccessMessage('Manual test steps generated successfully!');
+      }
+      
+      setActiveTab('review');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsGeneratingManual(false);
+    }
+  };
+
   const toggleFileSelection = (filePath) => {
     const newSelection = new Set(selectedFilePaths);
     if (newSelection.has(filePath)) {
@@ -583,6 +697,21 @@ export default function App() {
 
       const data = await response.json();
       setGeneratedDocs(data.generatedDocs);
+      
+      // Clear selected tests since generation is complete
+      setSelectedTests(new Set());
+      
+      // Initialize selections - select all tests for ADO and file write (excluding already created)
+      const allTestNames = Object.keys(data.generatedDocs);
+      const testsForAdo = allTestNames.filter(name => !createdTestCaseIds[name]);
+      const testsForFileWrite = allTestNames.filter(name => 
+        !manualTests.has(name) && 
+        createdTestCaseIds[name] && 
+        !writtenToFiles.has(name)
+      );
+      setSelectedForAdo(new Set(testsForAdo));
+      setSelectedForFileWrite(new Set(testsForFileWrite));
+      
       if (data.usedDomainContext) {
         setSuccessMessage('Documentation generated with domain context!');
       }
@@ -731,9 +860,60 @@ export default function App() {
     return edited && edited.isEditing;
   }, [editedSteps]);
 
+  const toggleAdoSelection = useCallback((testName) => {
+    setSelectedForAdo(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(testName)) {
+        newSet.delete(testName);
+      } else {
+        newSet.add(testName);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const toggleFileWriteSelection = useCallback((testName) => {
+    setSelectedForFileWrite(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(testName)) {
+        newSet.delete(testName);
+      } else {
+        newSet.add(testName);
+      }
+      return newSet;
+    });
+  }, []);
+
+  const selectAllForAdo = useCallback(() => {
+    const allTests = Object.keys(generatedDocs).filter(testName => !createdTestCaseIds[testName]);
+    setSelectedForAdo(new Set(allTests));
+  }, [generatedDocs, createdTestCaseIds]);
+
+  const deselectAllForAdo = useCallback(() => {
+    setSelectedForAdo(new Set());
+  }, []);
+
+  const selectAllForFileWrite = useCallback(() => {
+    const allTests = Object.keys(generatedDocs).filter(testName => 
+      !manualTests.has(testName) && 
+      createdTestCaseIds[testName] && 
+      !writtenToFiles.has(testName)
+    );
+    setSelectedForFileWrite(new Set(allTests));
+  }, [generatedDocs, manualTests, createdTestCaseIds, writtenToFiles]);
+
+  const deselectAllForFileWrite = useCallback(() => {
+    setSelectedForFileWrite(new Set());
+  }, []);
+
   const handleCreateInAdo = async () => {
     if (!adoConfigured) {
       setError('Azure DevOps is not configured. Please set ADO configuration in your .env file.');
+      return;
+    }
+
+    if (selectedForAdo.size === 0) {
+      setError('Please select at least one test case to create in ADO.');
       return;
     }
 
@@ -742,8 +922,10 @@ export default function App() {
     setSuccessMessage(null);
 
     try {
-      // Prepare test cases with documentation
-      const testCases = Object.entries(generatedDocs).map(([testName, doc]) => {
+      // Prepare test cases with documentation - only for selected tests
+      const testCases = Object.entries(generatedDocs)
+        .filter(([testName]) => selectedForAdo.has(testName))
+        .map(([testName, doc]) => {
         const testEditedSteps = editedSteps[testName] || {};
         // Use edited steps if available and saved, otherwise use original
         const stepsToUse = doc.steps.map((step, idx) => {
@@ -754,19 +936,21 @@ export default function App() {
           return step; // Use original
         });
 
-        // Find the original test info for the test name
+        // Find the original test info for the test name (only for automated tests)
         let fileName = '';
-        scanResults.forEach(file => {
-          file.testMethods.forEach(test => {
-            if (test.name === testName) {
-              fileName = file.fileName;
-            }
+        if (scanResults) {
+          scanResults.forEach(file => {
+            file.testMethods.forEach(test => {
+              if (test.name === testName) {
+                fileName = file.fileName;
+              }
+            });
           });
-        });
+        }
 
         return {
           testName: testName,
-          fileName: fileName,
+          fileName: fileName || (manualTests.has(testName) ? 'Manual Test' : ''),
           description: doc.description,
           steps: stepsToUse
         };
@@ -777,7 +961,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           testCases: testCases,
-          addTags: addTags
+          addTags: addTags,
+          testTagsMap: testTags
         })
       });
 
@@ -793,9 +978,20 @@ export default function App() {
       data.results.forEach(result => {
         if (result.success && result.testCaseId) {
           newIds[result.testName] = result.testCaseId;
+          // Remove from selection since it's now created
+          setSelectedForAdo(prev => {
+            const newSet = new Set(prev);
+            newSet.delete(result.testName);
+            return newSet;
+          });
         }
       });
       setCreatedTestCaseIds({ ...createdTestCaseIds, ...newIds });
+      
+      const successCount = data.results.filter(r => r.success).length;
+      if (successCount > 0) {
+        setSuccessMessage(`Successfully created ${successCount} test case(s) in ADO`);
+      }
       
       // Show warnings for any failures
       if (data.errors && data.errors.length > 0) {
@@ -811,6 +1007,11 @@ export default function App() {
   };
 
   const handleWriteIdsToFiles = async () => {
+    if (selectedForFileWrite.size === 0) {
+      setError('Please select at least one test case to write to files.');
+      return;
+    }
+
     if (Object.keys(createdTestCaseIds).length === 0) {
       setError('No test case IDs available. Please create test cases in ADO first.');
       return;
@@ -821,10 +1022,17 @@ export default function App() {
     setSuccessMessage(null);
 
     try {
-      // Map test names to file paths and collect IDs
+      // Map test names to file paths and collect IDs - only for selected tests
       const testCaseIdsToWrite = [];
       
-      Object.entries(createdTestCaseIds).forEach(([testName, testCaseId]) => {
+      Object.entries(createdTestCaseIds)
+        .filter(([testName]) => selectedForFileWrite.has(testName))
+        .forEach(([testName, testCaseId]) => {
+          // Skip manual tests - they don't have source files
+          if (manualTests.has(testName)) {
+            return;
+          }
+
         // Find the file path for this test
         let filePath = null;
         if (scanResults) {
@@ -847,7 +1055,12 @@ export default function App() {
       });
 
       if (testCaseIdsToWrite.length === 0) {
-        throw new Error('No test files found. Please scan the repository first.');
+        const manualTestCount = Object.keys(createdTestCaseIds).filter(name => manualTests.has(name)).length;
+        if (manualTestCount > 0) {
+          throw new Error('No automated test files found. Manual tests cannot be written back to source files.');
+        } else {
+          throw new Error('No test files found. Please scan the repository first.');
+        }
       }
 
       const response = await apiFetch(`${API_BASE_URL}/write-test-ids`, {
@@ -871,6 +1084,29 @@ export default function App() {
         const successCount = data.results.filter(r => r.success).length;
         setError(null);
         setSuccessMessage(`Successfully updated ${successCount} file(s) with test case IDs!`);
+        
+        // Track which tests were written and remove from selection
+        data.results.forEach(result => {
+          if (result.success && result.testsUpdated) {
+            // Find which tests were in this file
+            if (scanResults) {
+              scanResults.forEach(file => {
+                if (file.filePath === result.filePath) {
+                  file.testMethods.forEach(test => {
+                    if (selectedForFileWrite.has(test.name) && createdTestCaseIds[test.name]) {
+                      setWrittenToFiles(prev => new Set([...prev, test.name]));
+                      setSelectedForFileWrite(prev => {
+                        const newSet = new Set(prev);
+                        newSet.delete(test.name);
+                        return newSet;
+                      });
+                    }
+                  });
+                }
+              });
+            }
+          }
+        });
       } else {
         const failedFiles = data.results.filter(r => !r.success);
         if (failedFiles.length > 0) {
@@ -1001,6 +1237,53 @@ export default function App() {
             {/* Configuration Tab */}
             {activeTab === 'config' && (
               <div className="space-y-6">
+                {/* How to Use Guide Card */}
+                <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border-2 border-blue-200 rounded-xl p-6 shadow-sm">
+                  <div className="flex items-start gap-4">
+                    <div className="bg-blue-600 rounded-lg p-3 flex-shrink-0">
+                      <Lightbulb className="w-6 h-6 text-white" />
+                    </div>
+                    <div className="flex-1">
+                      <h3 className="text-lg font-bold text-gray-900 mb-3">How to Use Test Mate</h3>
+                      <div className="space-y-3">
+                        <div className="flex items-start gap-3">
+                          <div className="bg-blue-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</div>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-800">Scan for Missing IDs</p>
+                            <p className="text-xs text-gray-600 mt-0.5">Find tests that don't have ADO test case IDs yet, and create AI-generated test steps</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="bg-purple-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</div>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-800">Analyze Repository</p>
+                            <p className="text-xs text-gray-600 mt-0.5">Get insights about your test structure and statistics</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="bg-green-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</div>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-800">Generate Manual Test</p>
+                            <p className="text-xs text-gray-600 mt-0.5">Create manual test cases with AI-generated steps</p>
+                          </div>
+                        </div>
+                        <div className="flex items-start gap-3">
+                          <div className="bg-amber-600 text-white rounded-full w-6 h-6 flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</div>
+                          <div>
+                            <p className="text-sm font-semibold text-gray-800">Suggest Context Updates</p>
+                            <p className="text-xs text-gray-600 mt-0.5">AI analyzes your tests to suggest domain context improvements</p>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-4 pt-4 border-t border-blue-200">
+                        <p className="text-xs text-gray-600">
+                          <strong className="text-gray-800">Workflow:</strong> After scanning, select tests → Review generated documentation → Create tests in ADO and save IDs to test files
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
                     Repository Path
@@ -1013,7 +1296,7 @@ export default function App() {
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                   />
                   <p className="mt-1 text-sm text-gray-500">
-                    Path to your test automation repository
+                    Path to your test directory of automation repository
                   </p>
                 </div>
 
@@ -1033,6 +1316,51 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                <div className="flex gap-3 pt-4 flex-wrap">
+                  <button
+                    onClick={handleScan}
+                    disabled={!config.repoPath || isScanning}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    {isScanning ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Scanning...
+                      </>
+                    ) : (
+                      <>
+                        <Play className="w-4 h-4" />
+                        Scan for Missing IDs
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={handleAnalyze}
+                    disabled={!config.repoPath || isAnalyzing}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    {isAnalyzing ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Analyzing...
+                      </>
+                    ) : (
+                      <>
+                        <BarChart3 className="w-4 h-4" />
+                        Analyze Repository
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => setShowManualTestModal(true)}
+                    disabled={!openAiConfigured}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    <Plus className="w-4 h-4" />
+                    Generate Manual Test
+                  </button>
+                </div>
 
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-2">
@@ -1080,20 +1408,6 @@ export default function App() {
                   )}
                 </div>
 
-                <div>
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    Test Property Name
-                  </label>
-                  <div className="flex items-center gap-2 px-4 py-3 rounded-lg bg-gray-50 border border-gray-200">
-                    <div className="flex-1">
-                      <p className="text-sm font-medium text-gray-900">{config.testPropertyName}</p>
-                      <p className="text-xs text-gray-500 mt-1">
-                        The attribute name used to store ADO test case IDs
-                      </p>
-                    </div>
-                  </div>
-                </div>
-
                 <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
                   <div className="flex items-start gap-2">
                     <FileText className="w-5 h-5 text-blue-600 flex-shrink-0 mt-0.5" />
@@ -1107,41 +1421,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="flex gap-3 pt-4">
-              <button
-                onClick={handleAnalyze}
-                disabled={!config.repoPath || isAnalyzing}
-                className="flex items-center gap-2 px-6 py-2.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-              >
-                    {isAnalyzing ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Analyzing...
-                      </>
-                    ) : (
-                      <>
-                        <BarChart3 className="w-4 h-4" />
-                        Analyze Repository
-                      </>
-                    )}
-                  </button>
-                  <button
-                    onClick={handleScan}
-                    disabled={!config.repoPath || isScanning}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                  >
-                    {isScanning ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Scanning...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-4 h-4" />
-                        Scan for Missing IDs
-                      </>
-                    )}
-                  </button>
+                <div className="pt-2">
                   <button
                     onClick={handleSuggestContextUpdates}
                     disabled={!config.repoPath || isAnalyzingContext || !openAiConfigured}
@@ -1229,6 +1509,154 @@ export default function App() {
                             )}
                           </button>
                         </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Manual Test Generation Modal */}
+                {showManualTestModal && (
+                  <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+                    <div className="bg-white rounded-lg shadow-xl max-w-3xl w-full mx-4 max-h-[90vh] flex flex-col">
+                      <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
+                        <h3 className="text-lg font-semibold text-gray-900">Generate Manual Test Case</h3>
+                        <button
+                          onClick={() => {
+                            setShowManualTestModal(false);
+                            setManualTestName('');
+                            setManualTestDescription('');
+                            setManualTestBulletPoints('');
+                            setManualTestTags('');
+                            setManualTestTagsArray([]);
+                          }}
+                          className="text-gray-400 hover:text-gray-600 transition-colors"
+                        >
+                          <X className="w-5 h-5" />
+                        </button>
+                      </div>
+                      <div className="flex-1 overflow-y-auto p-6 space-y-4">
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Test Name <span className="text-red-500">*</span>
+                          </label>
+                          <input
+                            type="text"
+                            value={manualTestName}
+                            onChange={(e) => setManualTestName(e.target.value)}
+                            placeholder="e.g., Verify User Login Flow"
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                          />
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Description/Requirements <span className="text-red-500">*</span>
+                          </label>
+                          <textarea
+                            value={manualTestDescription}
+                            onChange={(e) => setManualTestDescription(e.target.value)}
+                            placeholder="Describe the test scenario, what needs to be tested, and expected behavior..."
+                            rows={6}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent resize-y"
+                          />
+                          <p className="mt-1 text-xs text-gray-500">
+                            Provide a clear description of what this test should validate
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Additional Bullet Points (Optional)
+                          </label>
+                          <textarea
+                            value={manualTestBulletPoints}
+                            onChange={(e) => setManualTestBulletPoints(e.target.value)}
+                            placeholder="Enter additional context, bullet points, or specific steps to consider..."
+                            rows={4}
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent resize-y"
+                          />
+                          <p className="mt-1 text-xs text-gray-500">
+                            Optional: Add any additional context or specific points to consider
+                          </p>
+                        </div>
+
+                        <div>
+                          <label className="block text-sm font-medium text-gray-700 mb-2">
+                            Tags (Optional)
+                          </label>
+                          <input
+                            type="text"
+                            value={manualTestTags}
+                            onChange={handleManualTestTagInput}
+                            placeholder="tag1, tag2, tag3"
+                            className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
+                          />
+                          <p className="mt-1 text-xs text-gray-500">
+                            Enter tags separated by commas (e.g., "manual, smoke, regression")
+                          </p>
+                          {manualTestTagsArray.length > 0 && (
+                            <div className="mt-2 flex flex-wrap gap-2">
+                              {manualTestTagsArray.map((tag, idx) => (
+                                <span
+                                  key={idx}
+                                  className="inline-flex items-center gap-1 px-3 py-1 bg-green-100 text-green-800 text-sm rounded-full"
+                                >
+                                  <Tag className="w-3 h-3" />
+                                  {tag}
+                                  <button
+                                    onClick={() => removeManualTestTag(tag)}
+                                    className="ml-1 text-green-600 hover:text-green-800"
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </span>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+
+                        {!openAiConfigured && (
+                          <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-3">
+                            <div className="flex gap-2">
+                              <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+                              <p className="text-sm text-yellow-800">
+                                Please configure your OpenAI API key in the Configuration section
+                              </p>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                      <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-end gap-3">
+                        <button
+                          onClick={() => {
+                            setShowManualTestModal(false);
+                            setManualTestName('');
+                            setManualTestDescription('');
+                            setManualTestBulletPoints('');
+                            setManualTestTags('');
+                            setManualTestTagsArray([]);
+                          }}
+                          className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          onClick={handleGenerateManualTest}
+                          disabled={isGeneratingManual || !manualTestName.trim() || !manualTestDescription.trim() || !openAiConfigured}
+                          className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors flex items-center gap-2"
+                        >
+                          {isGeneratingManual ? (
+                            <>
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <Play className="w-4 h-4" />
+                              Generate Test Steps
+                            </>
+                          )}
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1402,18 +1830,12 @@ export default function App() {
                       Found {scanResults.reduce((acc, file) => acc + file.testMethods.length, 0)} test methods without ADO test case IDs
                     </p>
                   </div>
-                  <div className="ml-4 flex gap-2">
+                  <div className="ml-4">
                     <button
-                      onClick={selectAllTests}
-                      className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                      onClick={selectedTests.size === scanResults.reduce((acc, file) => acc + file.testMethods.length, 0) ? deselectAllTests : selectAllTests}
+                      className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-100 rounded transition-colors"
                     >
-                      Select All
-                    </button>
-                    <button
-                      onClick={deselectAllTests}
-                      className="px-4 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
-                    >
-                      Deselect All
+                      {selectedTests.size === scanResults.reduce((acc, file) => acc + file.testMethods.length, 0) ? 'Deselect All' : 'Select All'}
                     </button>
                   </div>
                 </div>
@@ -1447,26 +1869,6 @@ export default function App() {
                   </div>
                 ))}
 
-                <div className="flex gap-3 pt-4">
-                  <button
-                    onClick={handleGenerate}
-                    disabled={selectedTests.size === 0 || isGenerating || !openAiConfigured}
-                    className="flex items-center gap-2 px-6 py-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                  >
-                    {isGenerating ? (
-                      <>
-                        <Loader2 className="w-4 h-4 animate-spin" />
-                        Generating Documentation...
-                      </>
-                    ) : (
-                      <>
-                        <Play className="w-4 h-4" />
-                        Generate Documentation ({selectedTests.size} tests)
-                      </>
-                    )}
-                  </button>
-                </div>
-
                 {!openAiConfigured && (
                   <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                     <div className="flex gap-2">
@@ -1475,6 +1877,29 @@ export default function App() {
                         Please configure your OpenAI API key in the Configuration tab
                       </p>
                     </div>
+                  </div>
+                )}
+
+                {/* Floating Generate Test Steps Button */}
+                {selectedTests.size > 0 && (
+                  <div className="fixed bottom-6 right-6 z-40">
+                    <button
+                      onClick={handleGenerate}
+                      disabled={selectedTests.size === 0 || isGenerating || !openAiConfigured}
+                      className="flex items-center gap-2 px-6 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors shadow-lg hover:shadow-xl"
+                    >
+                      {isGenerating ? (
+                        <>
+                          <Loader2 className="w-5 h-5 animate-spin" />
+                          <span>Generating...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play className="w-5 h-5" />
+                          <span>Generate Test Steps ({selectedTests.size})</span>
+                        </>
+                      )}
+                    </button>
                   </div>
                 )}
               </div>
@@ -1503,7 +1928,7 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className={`grid grid-cols-1 ${(analysisResults.summary.duplicateIdsCount || 0) > 0 ? 'md:grid-cols-4' : 'md:grid-cols-3'} gap-4`}>
                   <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
                     <div className="text-xl font-bold text-gray-900">{analysisResults.summary.totalClasses}</div>
                     <div className="text-sm text-gray-700">Test Classes</div>
@@ -1516,6 +1941,20 @@ export default function App() {
                     <div className="text-xl font-bold text-gray-900">{analysisResults.summary.totalTags}</div>
                     <div className="text-sm text-gray-700">Unique Tags</div>
                   </div>
+                  {(analysisResults.summary.duplicateIdsCount || 0) > 0 && (
+                    <button
+                      onClick={() => {
+                        const duplicateSection = document.getElementById('duplicate-ids-section');
+                        if (duplicateSection) {
+                          duplicateSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                      }}
+                      className="bg-red-50 border border-red-200 rounded-lg p-4 hover:bg-red-100 hover:border-red-300 transition-colors cursor-pointer text-left w-full"
+                    >
+                      <div className="text-xl font-bold text-red-900">{analysisResults.summary.duplicateIdsCount}</div>
+                      <div className="text-sm text-red-700">Duplicate IDs</div>
+                    </button>
+                  )}
                 </div>
 
                 {/* Coverage Progress Bar */}
@@ -1601,6 +2040,80 @@ export default function App() {
                     </div>
                   </div>
                 )}
+
+                {/* Duplicate IDs */}
+                {analysisResults.duplicateIds && analysisResults.duplicateIds.length > 0 && (
+                  <div id="duplicate-ids-section" className="border border-red-200 rounded-lg overflow-hidden">
+                    <div className="bg-red-50 px-4 py-3 border-b border-red-200">
+                      <div className="flex items-center gap-2">
+                        <AlertCircle className="w-5 h-5 text-red-600" />
+                        <h3 className="font-semibold text-red-900">Duplicate Test Case IDs</h3>
+                        <span className="text-sm text-red-700">
+                          ({analysisResults.duplicateIds.length} duplicate ID{analysisResults.duplicateIds.length !== 1 ? 's' : ''} found)
+                        </span>
+                      </div>
+                    </div>
+                    <div className="divide-y divide-red-100 max-h-96 overflow-y-auto">
+                      {analysisResults.duplicateIds.map((duplicate, idx) => (
+                        <div key={idx} className="bg-white">
+                          <button
+                            onClick={() => setExpandedDuplicateId(expandedDuplicateId === duplicate.adoId ? null : duplicate.adoId)}
+                            className="w-full p-4 hover:bg-red-50 flex items-center justify-between text-left"
+                          >
+                            <div className="flex items-center gap-3">
+                              {expandedDuplicateId === duplicate.adoId ? (
+                                <ChevronDown className="w-4 h-4 text-red-600" />
+                              ) : (
+                                <ChevronRight className="w-4 h-4 text-red-600" />
+                              )}
+                              <div>
+                                <div className="font-medium text-red-900">
+                                  ID: <span className="font-mono">{duplicate.adoId}</span>
+                                </div>
+                                <div className="text-sm text-red-700">
+                                  Used by {duplicate.count} test{duplicate.count !== 1 ? 's' : ''}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="px-3 py-1 bg-red-100 text-red-800 text-sm font-semibold rounded">
+                              {duplicate.count}x
+                            </div>
+                          </button>
+                          {expandedDuplicateId === duplicate.adoId && (
+                            <div className="px-4 pb-4 bg-red-50">
+                              <div className="space-y-2">
+                                {duplicate.tests.map((test, testIdx) => (
+                                  <div key={testIdx} className="bg-white border border-red-200 rounded-lg p-3">
+                                    <div className="flex items-start justify-between">
+                                      <div className="flex-1">
+                                        <div className="font-medium text-gray-900">{test.name}</div>
+                                        <div className="text-sm text-gray-600 mt-1">
+                                          <span className="font-medium">{test.className}</span>
+                                          <span className="mx-2">•</span>
+                                          <span className="text-gray-500">{test.filePath}</span>
+                                        </div>
+                                        {test.tags && test.tags.length > 0 && (
+                                          <div className="mt-2 flex flex-wrap gap-1">
+                                            {test.tags.map((tag, tagIdx) => (
+                                              <span key={tagIdx} className="px-2 py-1 bg-purple-100 text-purple-700 text-xs rounded">
+                                                <Tag className="w-3 h-3 inline mr-1" />
+                                                {tag}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1616,64 +2129,72 @@ export default function App() {
                       </p>
                     </div>
                   </div>
-                  <div className="ml-4 flex gap-2">
+                  <div className="ml-4 flex items-center gap-3 text-xs text-gray-600">
                     <button
-                      onClick={handleExportDocs}
-                      className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                      onClick={selectedForAdo.size === Object.keys(generatedDocs).filter(name => !createdTestCaseIds[name]).length ? deselectAllForAdo : selectAllForAdo}
+                      className="hover:text-gray-800 hover:underline"
                     >
-                      <Download className="w-4 h-4" />
-                      Export Docs
+                      {selectedForAdo.size === Object.keys(generatedDocs).filter(name => !createdTestCaseIds[name]).length ? 'Deselect All' : 'Select All'} for ADO
                     </button>
+                    {Object.keys(generatedDocs).some(testName => !manualTests.has(testName)) && (
+                      <>
+                        <span>•</span>
+                        <button
+                          onClick={selectedForFileWrite.size === Object.keys(generatedDocs).filter(name => !manualTests.has(name) && createdTestCaseIds[name] && !writtenToFiles.has(name)).length ? deselectAllForFileWrite : selectAllForFileWrite}
+                          className="hover:text-gray-800 hover:underline"
+                        >
+                          {selectedForFileWrite.size === Object.keys(generatedDocs).filter(name => !manualTests.has(name) && createdTestCaseIds[name] && !writtenToFiles.has(name)).length ? 'Deselect All' : 'Select All'} for Files
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex items-center gap-3">
+                  {/* Only show Write IDs to Files for automated tests */}
+                  {Object.keys(generatedDocs).some(testName => !manualTests.has(testName)) && (
                     <button
-                      onClick={handleExport}
-                      className="flex items-center gap-2 px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                      onClick={handleWriteIdsToFiles}
+                      disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0 || selectedForFileWrite.size === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
                     >
-                      <Download className="w-4 h-4" />
-                      Export IDs
-                    </button>
-                    <div className="flex gap-1">
-                      <button
-                        onClick={handleWriteIdsToFiles}
-                        disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0}
-                        className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                      >
-                        {isWritingIds ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Writing...
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle className="w-4 h-4" />
-                            Write IDs to Files
-                          </>
-                        )}
-                      </button>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={handleCreateInAdo}
-                        disabled={isCreatingInAdo || !adoConfigured}
-                        className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                      >
-                        {isCreatingInAdo ? (
-                          <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                            Creating in ADO...
-                          </>
-                        ) : (
-                          <>
-                            <CheckCircle className="w-4 h-4" />
-                            Create in ADO
-                          </>
-                        )}
-                      </button>
-                      {adoMockMode && (
-                        <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded font-medium border border-yellow-300" title="Mock mode is enabled - test cases will be simulated without creating them in ADO">
-                          🧪 MOCK MODE
-                        </span>
+                      {isWritingIds ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Writing...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4" />
+                          Write IDs to Files {selectedForFileWrite.size > 0 && `(${selectedForFileWrite.size})`}
+                        </>
                       )}
-                    </div>
+                    </button>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleCreateInAdo}
+                      disabled={isCreatingInAdo || !adoConfigured || selectedForAdo.size === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                    >
+                      {isCreatingInAdo ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Creating in ADO...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4" />
+                          Create in ADO {selectedForAdo.size > 0 && `(${selectedForAdo.size})`}
+                        </>
+                      )}
+                    </button>
+                    {adoMockMode && (
+                      <span className="px-2 py-1 bg-yellow-100 text-yellow-800 text-xs rounded font-medium border border-yellow-300" title="Mock mode is enabled - test cases will be simulated without creating them in ADO">
+                        🧪 MOCK MODE
+                      </span>
+                    )}
                   </div>
                 </div>
 
@@ -1717,15 +2238,71 @@ export default function App() {
                   }
                   
                   const displayTitle = className ? `${className} - ${testName}` : testName;
+                  const isCreatedInAdo = !!testCaseId;
+                  const isWrittenToFile = writtenToFiles.has(testName);
+                  const canSelectForAdo = !isCreatedInAdo;
+                  const canSelectForFileWrite = !manualTests.has(testName) && isCreatedInAdo && !isWrittenToFile;
                   
                   return (
                     <div key={testName} className="border border-gray-200 rounded-lg overflow-hidden">
                       <div className={`px-4 py-3 border-b border-gray-200 ${testCaseId ? 'bg-green-50' : 'bg-gray-50'}`}>
-                        <div className="flex items-center justify-between">
-                          <h3 className="font-semibold text-gray-900">{displayTitle}</h3>
+                        <div className="flex items-center justify-between gap-4">
+                          <div className="flex items-center gap-4 flex-1">
+                            {/* Checkboxes */}
+                            <div className="flex items-center gap-4 flex-shrink-0">
+                              {/* Create in ADO checkbox */}
+                              <label className="flex items-center gap-2 cursor-pointer">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedForAdo.has(testName)}
+                                  onChange={() => toggleAdoSelection(testName)}
+                                  disabled={!canSelectForAdo}
+                                  className="w-4 h-4 text-green-600 rounded focus:ring-2 focus:ring-green-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                />
+                                <span className={`text-xs font-medium ${canSelectForAdo ? 'text-gray-700' : 'text-gray-400'}`}>
+                                  ADO
+                                </span>
+                              </label>
+                              {/* Write to Files checkbox */}
+                              {!manualTests.has(testName) && (
+                                <label className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={selectedForFileWrite.has(testName)}
+                                    onChange={() => toggleFileWriteSelection(testName)}
+                                    disabled={!canSelectForFileWrite}
+                                    className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                                  />
+                                  <span className={`text-xs font-medium ${canSelectForFileWrite ? 'text-gray-700' : 'text-gray-400'}`}>
+                                    File
+                                  </span>
+                                </label>
+                              )}
+                            </div>
+                            {/* Test Name and Badges */}
+                            <div className="flex items-center gap-2 flex-1 min-w-0">
+                              <h3 className="font-semibold text-gray-900 truncate">{displayTitle}</h3>
+                              {manualTests.has(testName) && (
+                                <span className="px-2 py-0.5 bg-green-100 text-green-800 text-xs rounded font-medium border border-green-300 flex-shrink-0">
+                                  Manual
+                                </span>
+                              )}
+                              {isCreatedInAdo && (
+                                <span className="px-2 py-0.5 bg-green-100 text-green-800 text-xs rounded font-medium border border-green-300 flex items-center gap-1 flex-shrink-0">
+                                  <CheckCircle className="w-3 h-3" />
+                                  Created
+                                </span>
+                              )}
+                              {isWrittenToFile && (
+                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 text-xs rounded font-medium border border-blue-300 flex items-center gap-1 flex-shrink-0">
+                                  <CheckCircle className="w-3 h-3" />
+                                  Written
+                                </span>
+                              )}
+                            </div>
+                          </div>
                           {testCaseId && (
-                            <div className="flex items-center gap-2">
-                              <CheckCircle className="w-5 h-5 text-green-600" />
+                            <div className="flex items-center gap-2 flex-shrink-0">
                               {adoLink ? (
                                 <a
                                   href={adoLink}
@@ -1733,11 +2310,11 @@ export default function App() {
                                   rel="noopener noreferrer"
                                   className="text-sm font-medium text-green-700 hover:text-green-800 hover:underline"
                                 >
-                                  Test Case ID: {testCaseId}
+                                  ID: {testCaseId}
                                 </a>
                               ) : (
                                 <span className="text-sm font-medium text-green-700">
-                                  Test Case ID: {testCaseId}
+                                  ID: {testCaseId}
                                 </span>
                               )}
                             </div>
@@ -1825,17 +2402,34 @@ export default function App() {
                           })}
                         </div>
                       </div>
-                      <div className="pt-2 border-t border-gray-200">
-                        {testCaseId ? (
-                          <p className="text-xs text-gray-500 font-mono">
-                            {`[Property("${config.testPropertyName}", "${testCaseId}")]`}
-                          </p>
-                        ) : (
-                          <p className="text-xs text-gray-500 font-mono">
-                            {`[Property("${config.testPropertyName}", "PENDING_ADO_CREATION")]`}
-                          </p>
-                        )}
-                      </div>
+                      {/* Only show property attribute for automated tests */}
+                      {!manualTests.has(testName) && (
+                        <div className="pt-2 border-t border-gray-200">
+                          {testCaseId ? (
+                            <p className="text-xs text-gray-500 font-mono">
+                              {`[Property("${config.testPropertyName}", "${testCaseId}")]`}
+                            </p>
+                          ) : (
+                            <p className="text-xs text-gray-500 font-mono">
+                              {`[Property("${config.testPropertyName}", "PENDING_ADO_CREATION")]`}
+                            </p>
+                          )}
+                        </div>
+                      )}
+                      {/* Show tags for manual tests */}
+                      {manualTests.has(testName) && testTags[testName] && testTags[testName].length > 0 && (
+                        <div className="pt-2 border-t border-gray-200">
+                          <div className="flex flex-wrap gap-2">
+                            <span className="text-xs text-gray-500">Tags:</span>
+                            {testTags[testName].map((tag, idx) => (
+                              <span key={idx} className="px-2 py-1 bg-green-100 text-green-800 text-xs rounded-full">
+                                <Tag className="w-3 h-3 inline mr-1" />
+                                {tag}
+                              </span>
+                            ))}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   </div>
                   );

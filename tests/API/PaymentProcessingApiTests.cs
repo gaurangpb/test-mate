@@ -43,6 +43,7 @@ namespace MyTestAutomation.Tests.API
         }
 
         [Ignore("Functionality not implemented yet")]
+        [Property("ADOTestCaseId", "100000")]
         [Test, APIOnly, Test04]
         public async Task PaymentProcessingV1RefundTest()
         {
