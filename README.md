@@ -20,6 +20,7 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
   - Supports both `[Category]` and `[Tag]` attributes
 - **✅ ADO Integration**: Complete Azure DevOps workflow including:
   - Automatic test case creation in Azure DevOps
+  - Update existing test cases in Azure DevOps (steps, description, tags)
   - Writing test case IDs back to source files
   - Test case tracking and coverage reporting
 - **✏️ Editable Documentation**: Review and edit generated test steps before exporting
@@ -116,7 +117,7 @@ start-app.bat
 
    - Enter the path to your test repository (e.g., `C:\Projects\MyTestAutomation\tests`)
    - Configure OpenAI API key (or ensure it's set in `.env`)
-   - Set the TestProperty name (default: `TestCaseId`)
+   - Set the TestProperty name (default: `ADOTestCaseId`)
    - (Optional) Specify path to domain context file for enhanced documentation generation
 
    - Click "Analyze Repository" to get comprehensive statistics (recommended first step)
@@ -142,6 +143,12 @@ start-app.bat
    - Export documentation as text file
    - Export TestProperty attributes for manual addition
 
+6. **Update Tests in ADO Tab**:
+   - Scan for tests that already have ADO test case IDs
+   - View and edit test case details (steps, description, tags) from Azure DevOps
+   - Update test cases in Azure DevOps with modified documentation
+   - Useful for maintaining and updating existing test cases
+
 ### Complete Workflow
 
 The typical workflow for documenting tests and integrating with Azure DevOps:
@@ -154,6 +161,14 @@ The typical workflow for documenting tests and integrating with Azure DevOps:
 6. **Review & Edit** → Refine test steps if needed
 7. **Create in ADO** → Create test cases in Azure DevOps (gets test case IDs)
 8. **Write IDs** → Automatically add TestProperty attributes to source files
+
+**Alternative Workflow - Updating Existing Test Cases:**
+
+1. **Configure** → Set repository path and OpenAI API key
+2. **Scan for Tests with IDs** → Find tests that already have ADO test case IDs
+3. **Select Tests** → Choose tests to update
+4. **View & Edit** → Review and modify test case details from Azure DevOps
+5. **Update in ADO** → Save changes back to Azure DevOps
 
 ## Domain Context for Enhanced Documentation
 
@@ -211,7 +226,7 @@ public async Task VerifyApiEndpoint()
 
 ```csharp
 [Test]
-[TestProperty("TestCaseId", "12345")]
+[TestProperty("ADOTestCaseId", "12345")]
 [Category("Feature")]
 public void VerifyPasswordReset()
 {
@@ -241,7 +256,7 @@ Scans repository for test files without ADO TestCaseId.
 ```json
 {
   "repoPath": "C:\\path\\to\\tests",
-  "testPropertyName": "TestCaseId"
+  "testPropertyName": "ADOTestCaseId"
 }
 ```
 
@@ -268,7 +283,7 @@ Provides comprehensive test analysis and statistics.
 ```json
 {
   "repoPath": "C:\\path\\to\\tests",
-  "testPropertyName": "TestCaseId"
+  "testPropertyName": "ADOTestCaseId"
 }
 ```
 
@@ -430,7 +445,7 @@ Writes test case IDs back to source files as `[TestProperty]` attributes.
       "testCaseId": "123456"
     }
   ],
-  "testPropertyName": "TestCaseId"
+  "testPropertyName": "ADOTestCaseId"
 }
 ```
 
@@ -456,6 +471,134 @@ Writes test case IDs back to source files as `[TestProperty]` attributes.
 - Finds the test method in the source file
 - Adds or updates the `[TestProperty]` attribute before the `[Test]` attribute
 - Preserves existing code formatting and indentation
+
+### `POST /api/scan/scan-with-ids`
+
+Scans repository for test files that already have ADO TestCaseId.
+
+**Request:**
+
+```json
+{
+  "repoPath": "C:\\path\\to\\tests",
+  "testPropertyName": "ADOTestCaseId"
+}
+```
+
+**Response:**
+
+```json
+{
+  "results": [
+    {
+      "fileName": "LoginTests.cs",
+      "filePath": "UI/Authentication/LoginTests.cs",
+      "testMethods": [
+        {
+          "name": "VerifyLoginSuccess",
+          "testCaseId": "123456"
+        }
+      ]
+    }
+  ]
+}
+```
+
+### `GET /api/ado/test-case/:testCaseId`
+
+Retrieves test case details from Azure DevOps.
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": 123456,
+    "title": "VerifyLoginSuccess",
+    "description": "Test description...",
+    "steps": [
+      {
+        "action": "Action description",
+        "expectedResult": "Expected result description"
+      }
+    ],
+    "tags": ["Smoke", "Regression"]
+  }
+}
+```
+
+### `PATCH /api/ado/test-case/:testCaseId`
+
+Updates a single test case in Azure DevOps.
+
+**Request:**
+
+```json
+{
+  "steps": [
+    {
+      "action": "Updated action description",
+      "expectedResult": "Updated expected result"
+    }
+  ],
+  "description": "Updated test description",
+  "tags": ["Smoke", "Regression", "Updated"]
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": 123456,
+    "title": "VerifyLoginSuccess"
+  }
+}
+```
+
+### `POST /api/ado/batch-update-test-cases`
+
+Batch updates multiple test cases in Azure DevOps.
+
+**Request:**
+
+```json
+{
+  "updates": [
+    {
+      "testCaseId": 123456,
+      "steps": [
+        {
+          "action": "Action description",
+          "expectedResult": "Expected result"
+        }
+      ],
+      "description": "Test description",
+      "tags": ["Smoke"]
+    }
+  ]
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "results": [
+    {
+      "testCaseId": 123456,
+      "success": true
+    }
+  ],
+  "message": "Successfully updated 1 test case(s)"
+}
+```
+
+**Note:** Requires Azure DevOps configuration in `.env` file (same as create-test-cases endpoint).
 
 ## Project Structure
 
@@ -503,9 +646,11 @@ test-mate/
 ### Azure DevOps Integration
 
 - Creates test cases in Azure DevOps with generated documentation
+- Updates existing test cases in Azure DevOps (steps, description, tags)
 - Automatically writes test case IDs back to source files
 - Supports custom TestProperty attribute names
 - Tracks test coverage and ADO ID mapping
+- Batch update support for multiple test cases
 - Mock mode available for testing (generates random test case IDs)
 
 ### UI Features
@@ -522,6 +667,11 @@ test-mate/
   - Visual indicators for test case ID status
   - One-click export options
   - Direct Azure DevOps integration
+- **Update Tests in ADO Tab**:
+  - Scan for tests with existing ADO IDs
+  - View and edit test case details from Azure DevOps
+  - Update test cases in Azure DevOps with modified documentation
+  - Track unsaved changes
 
 ## Troubleshooting
 

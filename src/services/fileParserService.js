@@ -66,6 +66,125 @@ class FileParserService {
     return results;
   }
 
+  async scanForTestsWithIds(repoPath, testPropertyName) {
+    console.log(`DEBUG: Scanning repository for tests WITH ADO IDs: ${repoPath}`);
+    console.log(`DEBUG: Looking for property name: ${testPropertyName || 'ADOTestCaseId'}`);
+
+    const testFiles = await this.findTestFiles(repoPath);
+    
+    if (testFiles.length === 0) {
+      console.log('DEBUG: No test files found');
+      return [];
+    }
+    
+    const filePromises = testFiles.map(async (filePath) => {
+      try {
+        console.log(`DEBUG: Processing file: ${filePath}`);
+        const fileContent = await fs.readFile(filePath, 'utf-8');
+        const testMethods = this.parseTestMethodsWithIds(fileContent, testPropertyName || 'ADOTestCaseId');
+        
+        if (testMethods.length > 0) {
+          // Extract class name from file content
+          const analysis = this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
+          const className = analysis.className || path.basename(filePath, '.cs');
+          
+          console.log(`DEBUG: File ${path.basename(filePath)} has ${testMethods.length} tests with IDs`);
+          return {
+            fileName: path.basename(filePath),
+            filePath: filePath,
+            className: className,
+            testMethods: testMethods
+          };
+        } else {
+          console.log(`DEBUG: File ${path.basename(filePath)} has no tests with IDs`);
+        }
+        return null;
+      } catch (error) {
+        console.error(`Error processing file ${filePath}:`, error.message);
+        return null;
+      }
+    });
+    
+    const fileResults = await Promise.all(filePromises);
+    const results = fileResults.filter(result => result !== null);
+
+    console.log(`DEBUG: Final results: ${results.length} files with tests with IDs`);
+    return results;
+  }
+
+  parseTestMethodsWithIds(content, testPropertyName) {
+    const testMethods = [];
+    
+    const testPropertyPattern = new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${testPropertyName}["']\\s*,\\s*["']([^"']+)["']`, 'i');
+    
+    console.log(`DEBUG: Scanning for property name: "${testPropertyName}"`);
+    console.log(`DEBUG: Test property pattern: ${testPropertyPattern.source}`);
+    
+    // First, remove commented out sections to avoid parsing commented test attributes
+    const cleanContent = this.removeComments(content);
+    
+    this.TEST_METHOD_PATTERN.lastIndex = 0;
+    let match;
+    while ((match = this.TEST_METHOD_PATTERN.exec(cleanContent)) !== null) {
+      const fullMethod = match[0];
+      const methodName = match[2];
+      const testAttrIndex = match.index;
+      
+      console.log(`DEBUG: Found test method: ${methodName}`);
+      
+      // Check for property in the matched method (after [Test])
+      let testCaseId = null;
+      let testCaseIdMatch = testPropertyPattern.exec(fullMethod);
+      
+      if (testCaseIdMatch) {
+        testCaseId = testCaseIdMatch[1].trim();
+      }
+      
+      // If not found, look backwards from [Test] attribute to find Property attributes
+      if (!testCaseId && testAttrIndex > 0) {
+        const lookbackStart = Math.max(0, testAttrIndex - 500);
+        const textBeforeTest = cleanContent.substring(lookbackStart, testAttrIndex);
+        
+        // Find the last method end before this test to avoid picking up IDs from previous tests
+        const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
+        let lastMethodEnd = -1;
+        let methodMatch;
+        
+        while ((methodMatch = methodPattern.exec(textBeforeTest)) !== null) {
+          lastMethodEnd = lookbackStart + methodMatch.index + methodMatch[0].length;
+        }
+        
+        // Search in the section between the last method end and the current test
+        const searchStart = lastMethodEnd > -1 ? lastMethodEnd : lookbackStart;
+        const attrSection = cleanContent.substring(searchStart, testAttrIndex + fullMethod.length);
+        
+        testPropertyPattern.lastIndex = 0;
+        testCaseIdMatch = testPropertyPattern.exec(attrSection);
+        if (testCaseIdMatch) {
+          testCaseId = testCaseIdMatch[1].trim();
+          console.log(`DEBUG: Method ${methodName} found Property attribute before [Test] with ID: ${testCaseId}`);
+        }
+      }
+      
+      if (testCaseId) {
+        const methodStart = cleanContent.indexOf(match[1]);
+        const methodCode = this.extractMethodCode(cleanContent, methodStart);
+        
+        testMethods.push({
+          name: methodName,
+          hasTestCaseId: true,
+          testCaseId: testCaseId,
+          code: methodCode
+        });
+        
+        console.log(`DEBUG: Added test method with ID: ${methodName} (ID: ${testCaseId})`);
+      }
+    }
+    
+    console.log(`DEBUG: Total test methods with IDs found: ${testMethods.length}`);
+    return testMethods;
+  }
+
   async countTestFiles(repoPath) {
     const testFiles = await this.findTestFiles(repoPath);
     return testFiles.length;

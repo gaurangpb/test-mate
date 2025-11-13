@@ -27,10 +27,6 @@ class OpenAIService {
     return this.client !== null;
   }
 
-  setClient(apiKey) {
-    this.client = new OpenAI({ apiKey });
-  }
-
   async generateDocumentationForTests(tests, domainContext = null) {
     const documentationResults = [];
     
@@ -156,6 +152,110 @@ class OpenAIService {
           }
         ]
       };
+    }
+  }
+
+  /**
+   * Generate steps for a test case, merging with existing steps
+   * @param {Object} params - { testCode, existingSteps, testName, domainContext }
+   * @returns {Promise<Array>} - Array of steps with action and expectedResult
+   */
+  async generateStepsForTest({ testCode, existingSteps = [], testName, domainContext = null }) {
+    if (!this.client) {
+      throw new Error('OpenAI client not configured');
+    }
+
+    let prompt = `You are a QA documentation expert. Analyze this automated test code and generate or update test steps.`;
+
+    // Add domain context if provided
+    if (domainContext) {
+      prompt += `\n\n=== APPLICATION DOMAIN CONTEXT ===\n${domainContext}\n=== END DOMAIN CONTEXT ===\n`;
+    }
+
+    prompt += `\nTest Method Name: ${testName || 'Test'}\n\nTest Code:\n\`\`\`csharp\n${testCode}\n\`\`\`\n\n`;
+
+    if (existingSteps && existingSteps.length > 0) {
+      prompt += `=== EXISTING TEST STEPS ===\n`;
+      existingSteps.forEach((step, idx) => {
+        prompt += `${idx + 1}. Action: ${step.action || ''}\n   Expected Result: ${step.expectedResult || ''}\n\n`;
+      });
+      prompt += `=== END EXISTING STEPS ===\n\n`;
+      prompt += `Your task:\n`;
+      prompt += `1. Review the existing steps above\n`;
+      prompt += `2. Analyze the test code to understand what it actually does\n`;
+      prompt += `3. Update, add, or remove steps as needed to accurately reflect the test code\n`;
+      prompt += `4. Ensure steps are clear, testable, and match the logical flow of the test\n`;
+      prompt += `5. Keep steps that are still accurate, update steps that need changes, add missing steps, remove obsolete steps\n`;
+    } else {
+      prompt += `Generate detailed test steps in the format of Action and Expected Result pairs. `;
+      prompt += `Each step should be clear and testable. Include steps for setup, execution, and verification.`;
+    }
+
+    if (domainContext) {
+      prompt += `\n\nUse the domain context provided above to ensure steps use correct domain terminology and reflect actual user workflows.`;
+    }
+
+    prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:\n`;
+    if (domainContext) {
+      prompt += `- Use domain-specific terminology from the context provided\n`;
+      prompt += `- Ensure test steps reflect actual user journeys and workflows described in the context\n`;
+    }
+    prompt += `- Steps should be clear enough for manual testing if needed\n`;
+    prompt += `- Include verification steps based on assertions in the code\n`;
+    prompt += `- Number of steps should match the logical flow of the test (typically 3-7 steps)\n`;
+    if (existingSteps && existingSteps.length > 0) {
+      prompt += `- Preserve the intent of existing steps that are still accurate\n`;
+      prompt += `- Only change steps that need updates based on the actual test code\n`;
+    }
+
+    try {
+      console.log(`Generating steps for test: ${testName || 'Unknown'}`);
+      
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          {
+            role: 'system',
+            content: 'You are a QA documentation expert who creates clear, comprehensive test steps from automated test code. Always respond with valid JSON.'
+          },
+          {
+            role: 'user',
+            content: prompt
+          }
+        ],
+        temperature: 0.7,
+        max_tokens: 1500,
+        response_format: { type: 'json_object' }
+      });
+
+      const content = response.choices[0].message.content;
+      console.log(`OpenAI response for ${testName || 'Unknown'}:`, content);
+      
+      try {
+        const parsedContent = JSON.parse(content);
+        return parsedContent.steps || [];
+      } catch (parseError) {
+        console.error(`JSON parse error for ${testName || 'Unknown'}:`, parseError);
+        console.error(`Raw content:`, content);
+        
+        // Return existing steps if parsing fails
+        return existingSteps.length > 0 ? existingSteps : [
+          {
+            action: "Execute the test method",
+            expectedResult: "Test should pass successfully"
+          }
+        ];
+      }
+    } catch (error) {
+      console.error(`Error generating steps for ${testName || 'Unknown'}:`, error);
+      
+      // Return existing steps if generation fails
+      return existingSteps.length > 0 ? existingSteps : [
+        {
+          action: "Execute the test method",
+          expectedResult: "Test should pass successfully"
+        }
+      ];
     }
   }
 

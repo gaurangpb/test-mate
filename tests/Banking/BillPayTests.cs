@@ -16,6 +16,7 @@ namespace MyTestAutomation.Tests.Banking
             billPayPage = new BillPayPage(currentBrowser);
         }
 
+        [Property("ADOTestCaseId", "1185427")]
         [Test, HUST]
         public async Task AddNewPayeeAndMakePayment()
         {
@@ -58,7 +59,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(billPayPage.GetNextPaymentDate(), Is.EqualTo(DateTime.Now.AddDays(10).Date), "Next payment date should be set correctly");
         }
 
-        [Property("ADOTestCaseId", "100011")]
         [Test, HUST]
         public async Task ViewPaymentHistoryAndStatus()
         {
@@ -77,7 +77,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(billPayPage.GetPaymentStatus(), Is.Not.Empty, "Should show payment status");
         }
 
-        [Property("ADOTestCaseId", "100011")]
         [Test, HUST]
         public async Task CancelScheduledPayment()
         {

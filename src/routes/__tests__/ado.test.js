@@ -131,7 +131,8 @@ describe('ADO Routes', () => {
       expect(app.locals.adoService.createTestCases).toHaveBeenCalledWith(
         expect.any(Array),
         expect.any(Object),
-        true
+        true,
+        {}
       );
     });
 

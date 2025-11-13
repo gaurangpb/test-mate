@@ -37,7 +37,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(transferPage.GetConfirmationNumber(), Is.Not.Empty, "Should receive confirmation number");
         }
 
-        [Property("ADOTestCaseId", "100006")]
         [Test, HUST]
         public async Task ScheduleRecurringTransfer()
         {
@@ -78,6 +77,7 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(transferPage.GetEstimatedDeliveryDate(), Is.GreaterThan(DateTime.Now), "Should show estimated delivery date");
         }
 
+        [Property("ADOTestCaseId", "100007")]
         [Test, HUST]
         public async Task CancelScheduledTransfer()
         {

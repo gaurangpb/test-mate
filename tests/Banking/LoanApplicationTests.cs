@@ -36,7 +36,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(loanPage.GetApplicationReferenceNumber(), Is.Not.Empty, "Should receive application reference number");
         }
 
-        [Property("ADOTestCaseId", "100014")]
         [Test, HUST]
         public async Task CheckLoanApplicationStatus()
         {
@@ -62,7 +61,6 @@ namespace MyTestAutomation.Tests.Banking
             }
         }
 
-        [Property("ADOTestCaseId", "100015")]
         [Test, HUST]
         public async Task CalculateLoanPaymentEstimate()
         {

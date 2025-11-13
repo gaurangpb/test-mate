@@ -297,6 +297,26 @@ export default function App() {
   const [selectedForAdo, setSelectedForAdo] = useState(new Set()); // Tests selected for ADO creation
   const [selectedForFileWrite, setSelectedForFileWrite] = useState(new Set()); // Tests selected for file write-back
   const [writtenToFiles, setWrittenToFiles] = useState(new Set()); // Track which tests have been written to files
+  const [testAnalysisData, setTestAnalysisData] = useState(null); // Test analysis results
+  const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
+  const [analysisMode, setAnalysisMode] = useState('plan'); // 'plan' or 'bug'
+  const [analysisFilters, setAnalysisFilters] = useState({
+    planId: '',
+    bugId: '',
+    testOutcome: 'Failed',
+    bugStatus: '',
+    includeAttachments: true
+  });
+  // Update Tests in ADO feature state
+  const [updateScanResults, setUpdateScanResults] = useState(null);
+  const [selectedTestsForUpdate, setSelectedTestsForUpdate] = useState(new Set());
+  const [testCaseDetails, setTestCaseDetails] = useState({}); // { testCaseId: { steps, description, tags, title } }
+  const [editingTestCase, setEditingTestCase] = useState(null); // Currently editing test case ID
+  const [editedTestCaseData, setEditedTestCaseData] = useState({}); // { testCaseId: { steps, description, tags } }
+  const [isScanningForUpdate, setIsScanningForUpdate] = useState(false);
+  const [isLoadingTestCaseDetails, setIsLoadingTestCaseDetails] = useState(false);
+  const [isUpdatingInAdo, setIsUpdatingInAdo] = useState(false);
+  const [isGeneratingSteps, setIsGeneratingSteps] = useState(false);
 
   // Check OpenAI and ADO configuration status on mount
   useEffect(() => {
@@ -792,6 +812,64 @@ export default function App() {
     URL.revokeObjectURL(url);
   }, [generatedDocs, editedSteps]);
 
+  const handleFetchTestAnalysis = async () => {
+    if (!adoConfigured) {
+      setError('Please configure Azure DevOps settings first');
+      return;
+    }
+
+    // Validate inputs based on mode
+    if (analysisMode === 'bug' && !analysisFilters.bugId) {
+      setError('Please enter a Bug ID');
+      return;
+    }
+    if (analysisMode === 'plan' && !analysisFilters.planId && !adoConfig?.testPlanId) {
+      setError('Please enter a Test Plan ID or configure ADO_TEST_PLAN_ID in your .env file');
+      return;
+    }
+
+    setIsLoadingAnalysis(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const queryParams = new URLSearchParams({
+        testOutcome: analysisFilters.testOutcome,
+        includeAttachments: analysisFilters.includeAttachments.toString()
+      });
+      
+      if (analysisMode === 'plan') {
+        // Use provided planId or default from config
+        const planIdToUse = analysisFilters.planId || adoConfig?.testPlanId;
+        if (planIdToUse) {
+          queryParams.append('planId', planIdToUse);
+        }
+      } else {
+        queryParams.append('bugId', analysisFilters.bugId);
+      }
+      
+      if (analysisFilters.bugStatus) {
+        queryParams.append('bugStatus', analysisFilters.bugStatus);
+      }
+
+      const response = await apiFetch(`${API_BASE_URL}/ado/test-analysis?${queryParams.toString()}`);
+      
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to fetch test analysis');
+      }
+
+      const data = await response.json();
+      setTestAnalysisData(data.data);
+      setSuccessMessage('Test analysis loaded successfully');
+    } catch (err) {
+      setError(err.message);
+      setTestAnalysisData(null);
+    } finally {
+      setIsLoadingAnalysis(false);
+    }
+  };
+
   // Optimized: Memoize step editing handlers
   const handleStepClick = useCallback((testName, stepIndex) => {
     const testEditedSteps = editedSteps[testName] || {};
@@ -1121,6 +1199,320 @@ export default function App() {
     }
   };
 
+  // Update Tests in ADO handlers
+  const handleScanForUpdate = async () => {
+    if (!config.repoPath) {
+      setError('Please enter a repository path');
+      return;
+    }
+
+    setIsScanningForUpdate(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/scan-with-ids`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: config.repoPath,
+          testPropertyName: config.testPropertyName
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to scan repository');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      setUpdateScanResults(data.results);
+      
+      if (data.results.length === 0) {
+        if (data.debug) {
+          setError(`${data.debug.message}${data.debug.suggestion ? '\n\nSuggestion: ' + data.debug.suggestion : ''}`);
+        } else {
+          setError('No test files found with ADO test case IDs');
+        }
+      } else {
+        setActiveTab('update-ado');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsScanningForUpdate(false);
+    }
+  };
+
+  const handleViewSteps = async (testCaseId, testName) => {
+    if (!adoConfigured) {
+      setError('Azure DevOps is not configured');
+      return;
+    }
+
+    setIsLoadingTestCaseDetails(true);
+    setError(null);
+    setEditingTestCase(testCaseId);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/ado/test-case/${testCaseId}`, {
+        method: 'GET'
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to fetch test case details');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      setTestCaseDetails(prev => ({
+        ...prev,
+        [testCaseId]: data.data
+      }));
+      
+      // Initialize edited data with fetched data
+      setEditedTestCaseData(prev => ({
+        ...prev,
+        [testCaseId]: {
+          steps: data.data.steps || [],
+          description: data.data.description || '',
+          tags: data.data.tags || []
+        }
+      }));
+    } catch (err) {
+      setError(err.message);
+      setEditingTestCase(null);
+    } finally {
+      setIsLoadingTestCaseDetails(false);
+    }
+  };
+
+  const handleUpdateStep = (testCaseId, stepIndex, field, value) => {
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      const newSteps = [...testData.steps];
+      if (!newSteps[stepIndex]) {
+        newSteps[stepIndex] = { action: '', expectedResult: '' };
+      }
+      newSteps[stepIndex] = { ...newSteps[stepIndex], [field]: value };
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          steps: newSteps
+        }
+      };
+    });
+  };
+
+  const handleAddStep = (testCaseId) => {
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          steps: [...testData.steps, { action: '', expectedResult: '' }]
+        }
+      };
+    });
+  };
+
+  const handleDeleteStep = (testCaseId, stepIndex) => {
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      const newSteps = testData.steps.filter((_, idx) => idx !== stepIndex);
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          steps: newSteps
+        }
+      };
+    });
+  };
+
+  const handleMoveStep = (testCaseId, stepIndex, direction) => {
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      const newSteps = [...testData.steps];
+      const targetIndex = direction === 'up' ? stepIndex - 1 : stepIndex + 1;
+      if (targetIndex >= 0 && targetIndex < newSteps.length) {
+        [newSteps[stepIndex], newSteps[targetIndex]] = [newSteps[targetIndex], newSteps[stepIndex]];
+      }
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          steps: newSteps
+        }
+      };
+    });
+  };
+
+  const handleUpdateDescription = (testCaseId, description) => {
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          description
+        }
+      };
+    });
+  };
+
+  const handleUpdateTags = (testCaseId, tagsString) => {
+    const tags = tagsString ? tagsString.split(',').map(t => t.trim()).filter(t => t) : [];
+    setEditedTestCaseData(prev => {
+      const testData = prev[testCaseId] || { steps: [], description: '', tags: [] };
+      return {
+        ...prev,
+        [testCaseId]: {
+          ...testData,
+          tags
+        }
+      };
+    });
+  };
+
+  const handleGenerateSteps = async (testCaseId, testName, testCode) => {
+    if (!openAiConfigured) {
+      setError('Please configure OpenAI API key first');
+      return;
+    }
+
+    setIsGeneratingSteps(true);
+    setError(null);
+
+    try {
+      const testData = editedTestCaseData[testCaseId] || { steps: [], description: '', tags: [] };
+      const existingSteps = testData.steps || [];
+
+      const response = await apiFetch(`${API_BASE_URL}/generate-steps`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testCode: testCode,
+          existingSteps: existingSteps,
+          testName: testName,
+          domainContextPath: config.domainContextPath || null
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to generate steps');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      
+      setEditedTestCaseData(prev => ({
+        ...prev,
+        [testCaseId]: {
+          ...prev[testCaseId],
+          steps: data.steps || []
+        }
+      }));
+
+      setSuccessMessage('Steps generated successfully!');
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsGeneratingSteps(false);
+    }
+  };
+
+  const hasChanges = (testCaseId) => {
+    const original = testCaseDetails[testCaseId];
+    const edited = editedTestCaseData[testCaseId];
+    if (!original || !edited) return false;
+
+    // Check if steps changed
+    const originalSteps = JSON.stringify(original.steps || []);
+    const editedSteps = JSON.stringify(edited.steps || []);
+    if (originalSteps !== editedSteps) return true;
+
+    // Check if description changed
+    if ((original.description || '') !== (edited.description || '')) return true;
+
+    // Check if tags changed
+    const originalTags = (original.tags || []).sort().join(',');
+    const editedTags = (edited.tags || []).sort().join(',');
+    if (originalTags !== editedTags) return true;
+
+    return false;
+  };
+
+  const handleUpdateInAdo = async () => {
+    if (!adoConfigured) {
+      setError('Azure DevOps is not configured');
+      return;
+    }
+
+    if (selectedTestsForUpdate.size === 0) {
+      setError('Please select at least one test to update');
+      return;
+    }
+
+    setIsUpdatingInAdo(true);
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const updates = [];
+      selectedTestsForUpdate.forEach(testKey => {
+        const [testName, testCaseId] = testKey.split('|');
+        const edited = editedTestCaseData[testCaseId];
+        if (edited && hasChanges(testCaseId)) {
+          updates.push({
+            testCaseId: parseInt(testCaseId),
+            steps: edited.steps,
+            description: edited.description,
+            tags: edited.tags
+          });
+        }
+      });
+
+      if (updates.length === 0) {
+        setError('No changes detected for selected tests');
+        setIsUpdatingInAdo(false);
+        return;
+      }
+
+      const response = await apiFetch(`${API_BASE_URL}/ado/update-test-cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ updates })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to update test cases');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      
+      if (data.success) {
+        setSuccessMessage(data.message);
+        // Refresh test case details for updated tests
+        for (const update of updates) {
+          if (update.testCaseId && testCaseDetails[update.testCaseId]) {
+            // Refresh the details
+            await handleViewSteps(update.testCaseId, '');
+          }
+        }
+      } else {
+        throw new Error(data.message || 'Failed to update some test cases');
+      }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setIsUpdatingInAdo(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Header */}
@@ -1229,6 +1621,30 @@ export default function App() {
               >
                 <CheckCircle className="w-4 h-4 inline mr-2" />
                 Review & Export
+              </button>
+              <button
+                onClick={() => setActiveTab('test-analysis')}
+                className={`px-6 py-3 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'test-analysis'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+                style={{display: 'none'}}
+              >
+                <AlertCircle className="w-4 h-4 inline mr-2" />
+                Test Analysis
+              </button>
+              <button
+                onClick={() => setActiveTab('update-ado')}
+                disabled={!updateScanResults}
+                className={`px-6 py-3 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'update-ado'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700 disabled:opacity-50'
+                }`}
+              >
+                <FileText className="w-4 h-4 inline mr-2" />
+                Update Tests in ADO
               </button>
             </nav>
           </div>
@@ -1359,6 +1775,23 @@ export default function App() {
                   >
                     <Plus className="w-4 h-4" />
                     Generate Manual Test
+                  </button>
+                  <button
+                    onClick={handleScanForUpdate}
+                    disabled={!config.repoPath || isScanningForUpdate || !adoConfigured}
+                    className="flex items-center gap-2 px-6 py-2.5 bg-amber-600 text-white rounded-lg hover:bg-amber-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    {isScanningForUpdate ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Scanning...
+                      </>
+                    ) : (
+                      <>
+                        <FileText className="w-4 h-4" />
+                        Update Tests in ADO
+                      </>
+                    )}
                   </button>
                 </div>
 
@@ -2152,26 +2585,6 @@ export default function App() {
 
                 {/* Action Buttons */}
                 <div className="flex items-center gap-3">
-                  {/* Only show Write IDs to Files for automated tests */}
-                  {Object.keys(generatedDocs).some(testName => !manualTests.has(testName)) && (
-                    <button
-                      onClick={handleWriteIdsToFiles}
-                      disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0 || selectedForFileWrite.size === 0}
-                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
-                    >
-                      {isWritingIds ? (
-                        <>
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                          Writing...
-                        </>
-                      ) : (
-                        <>
-                          <CheckCircle className="w-4 h-4" />
-                          Write IDs to Files {selectedForFileWrite.size > 0 && `(${selectedForFileWrite.size})`}
-                        </>
-                      )}
-                    </button>
-                  )}
                   <div className="flex items-center gap-2">
                     <button
                       onClick={handleCreateInAdo}
@@ -2196,6 +2609,26 @@ export default function App() {
                       </span>
                     )}
                   </div>
+                  {/* Only show Write IDs to Files for automated tests */}
+                  {Object.keys(generatedDocs).some(testName => !manualTests.has(testName)) && (
+                    <button
+                      onClick={handleWriteIdsToFiles}
+                      disabled={isWritingIds || Object.keys(createdTestCaseIds).length === 0 || selectedForFileWrite.size === 0}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                    >
+                      {isWritingIds ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Writing...
+                        </>
+                      ) : (
+                        <>
+                          <CheckCircle className="w-4 h-4" />
+                          Write IDs to Files {selectedForFileWrite.size > 0 && `(${selectedForFileWrite.size})`}
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
 
                 {/* Tag Configuration Section */}
@@ -2473,6 +2906,608 @@ export default function App() {
                         </p>
                       </div>
                     </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Test Analysis Tab */}
+            {activeTab === 'test-analysis' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Test Analysis</h2>
+                    <p className="text-sm text-gray-600 mt-1">View failed tests and their linked bugs</p>
+                  </div>
+                </div>
+
+                {/* Mode Selection */}
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-4">
+                  <div className="mb-4">
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Analysis Mode
+                    </label>
+                    <div className="flex gap-4">
+                      <label className="flex items-center">
+                        <input
+                          type="radio"
+                          name="analysisMode"
+                          value="plan"
+                          checked={analysisMode === 'plan'}
+                          onChange={(e) => setAnalysisMode(e.target.value)}
+                          className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                        />
+                        <span className="ml-2 text-sm text-gray-700">By Test Plan</span>
+                      </label>
+                      <label className="flex items-center">
+                        <input
+                          type="radio"
+                          name="analysisMode"
+                          value="bug"
+                          checked={analysisMode === 'bug'}
+                          onChange={(e) => setAnalysisMode(e.target.value)}
+                          className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500"
+                        />
+                        <span className="ml-2 text-sm text-gray-700">By Bug ID (Reverse Lookup)</span>
+                      </label>
+                    </div>
+                  </div>
+
+                  {/* Plan ID or Bug ID Input */}
+                  <div className="mb-4">
+                    {analysisMode === 'plan' ? (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Test Plan ID
+                        </label>
+                        <input
+                          type="text"
+                          value={analysisFilters.planId}
+                          onChange={(e) => setAnalysisFilters({ ...analysisFilters, planId: e.target.value })}
+                          placeholder={adoConfig?.testPlanId ? `Default: ${adoConfig.testPlanId}` : 'Enter Test Plan ID'}
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        {adoConfig?.testPlanId && !analysisFilters.planId && (
+                          <p className="mt-1 text-xs text-gray-500">Leave empty to use default from config</p>
+                        )}
+                      </div>
+                    ) : (
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                          Bug ID
+                        </label>
+                        <input
+                          type="text"
+                          value={analysisFilters.bugId}
+                          onChange={(e) => setAnalysisFilters({ ...analysisFilters, bugId: e.target.value })}
+                          placeholder="Enter Bug ID (e.g., 12345)"
+                          className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        />
+                        <p className="mt-1 text-xs text-gray-500">Finds all test cases linked to this bug</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Filters */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Test Outcome
+                      </label>
+                      <select
+                        value={analysisFilters.testOutcome}
+                        onChange={(e) => setAnalysisFilters({ ...analysisFilters, testOutcome: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="Failed">Failed</option>
+                        <option value="Passed">Passed</option>
+                        <option value="Blocked">Blocked</option>
+                        <option value="NotExecuted">Not Executed</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        Bug Status (Optional)
+                      </label>
+                      <select
+                        value={analysisFilters.bugStatus}
+                        onChange={(e) => setAnalysisFilters({ ...analysisFilters, bugStatus: e.target.value })}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      >
+                        <option value="">All Statuses</option>
+                        <option value="Active">Active</option>
+                        <option value="New">New</option>
+                        <option value="Resolved">Resolved</option>
+                        <option value="Closed">Closed</option>
+                      </select>
+                    </div>
+                    <div className="flex items-end">
+                      <button
+                        onClick={handleFetchTestAnalysis}
+                        disabled={isLoadingAnalysis || !adoConfigured}
+                        className="w-full px-4 py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                      >
+                        {isLoadingAnalysis ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Loading...
+                          </>
+                        ) : (
+                          <>
+                            <BarChart3 className="w-4 h-4" />
+                            Fetch Analysis
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                  <div className="flex items-center">
+                    <input
+                      type="checkbox"
+                      id="includeAttachments"
+                      checked={analysisFilters.includeAttachments}
+                      onChange={(e) => setAnalysisFilters({ ...analysisFilters, includeAttachments: e.target.checked })}
+                      className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+                    />
+                    <label htmlFor="includeAttachments" className="ml-2 text-sm text-gray-700">
+                      Include bug attachments
+                    </label>
+                  </div>
+                </div>
+
+                {!adoConfigured && (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <div className="flex gap-2">
+                      <AlertCircle className="w-5 h-5 text-yellow-600 flex-shrink-0" />
+                      <div>
+                        <p className="text-sm text-yellow-800 font-medium mb-1">Azure DevOps Not Configured</p>
+                        <p className="text-sm text-yellow-700">
+                          Configure ADO settings in your .env file to fetch test analysis.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {testAnalysisData && (
+                  <div className="space-y-6">
+                    {/* Bug Info (for reverse lookup mode) */}
+                    {testAnalysisData.bug && (
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-3">Source Bug</h3>
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2 mb-2">
+                              <a
+                                href={testAnalysisData.bug.webUrl}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-blue-600 hover:text-blue-800 font-medium text-lg"
+                              >
+                                Bug #{testAnalysisData.bug.id}: {testAnalysisData.bug.title}
+                              </a>
+                              <span className={`px-2 py-1 rounded text-xs font-medium ${
+                                testAnalysisData.bug.status === 'Active' || testAnalysisData.bug.status === 'New'
+                                  ? 'bg-red-100 text-red-800'
+                                  : testAnalysisData.bug.status === 'Resolved'
+                                  ? 'bg-yellow-100 text-yellow-800'
+                                  : testAnalysisData.bug.status === 'Closed'
+                                  ? 'bg-green-100 text-green-800'
+                                  : 'bg-gray-100 text-gray-800'
+                              }`}>
+                                {testAnalysisData.bug.status}
+                              </span>
+                            </div>
+                            <p className="text-sm text-gray-600">Assigned to: {testAnalysisData.bug.assignedTo}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Summary Cards */}
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+                      <div className="bg-red-50 border border-red-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-red-600 font-medium">Failed Tests</p>
+                            <p className="text-2xl font-bold text-red-700">{testAnalysisData.summary.failedTests}</p>
+                          </div>
+                          <AlertCircle className="w-8 h-8 text-red-500" />
+                        </div>
+                      </div>
+                      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-blue-600 font-medium">With Bugs</p>
+                            <p className="text-2xl font-bold text-blue-700">{testAnalysisData.summary.testsWithBugs}</p>
+                          </div>
+                          <CheckCircle className="w-8 h-8 text-blue-500" />
+                        </div>
+                      </div>
+                      <div className="bg-orange-50 border border-orange-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-orange-600 font-medium">Without Bugs</p>
+                            <p className="text-2xl font-bold text-orange-700">{testAnalysisData.summary.testsWithoutBugs}</p>
+                          </div>
+                          <AlertCircle className="w-8 h-8 text-orange-500" />
+                        </div>
+                      </div>
+                      <div className="bg-purple-50 border border-purple-200 rounded-lg p-4">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-sm text-purple-600 font-medium">Total Bugs</p>
+                            <p className="text-2xl font-bold text-purple-700">{testAnalysisData.summary.totalBugs}</p>
+                          </div>
+                          <BarChart3 className="w-8 h-8 text-purple-500" />
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Bug Status Breakdown */}
+                    {testAnalysisData.summary.totalBugs > 0 && (
+                      <div className="bg-white border border-gray-200 rounded-lg p-4">
+                        <h3 className="text-lg font-semibold text-gray-900 mb-3">Bug Status Breakdown</h3>
+                        <div className="grid grid-cols-3 gap-4">
+                          <div className="text-center">
+                            <p className="text-sm text-gray-600">Active</p>
+                            <p className="text-xl font-bold text-red-600">{testAnalysisData.summary.activeBugs}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-sm text-gray-600">Resolved</p>
+                            <p className="text-xl font-bold text-yellow-600">{testAnalysisData.summary.resolvedBugs}</p>
+                          </div>
+                          <div className="text-center">
+                            <p className="text-sm text-gray-600">Closed</p>
+                            <p className="text-xl font-bold text-green-600">{testAnalysisData.summary.closedBugs}</p>
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Failed Tests List */}
+                    <div className="space-y-4">
+                      <h3 className="text-lg font-semibold text-gray-900">
+                        Failed Tests ({testAnalysisData.failedTests.length})
+                      </h3>
+                      {testAnalysisData.failedTests.length === 0 ? (
+                        <div className="bg-green-50 border border-green-200 rounded-lg p-4">
+                          <p className="text-sm text-green-800">No failed tests found matching the selected filters.</p>
+                        </div>
+                      ) : (
+                        testAnalysisData.failedTests.map((test, idx) => (
+                          <div key={idx} className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+                            <div className="flex items-start justify-between">
+                              <div className="flex-1">
+                                <div className="flex items-center gap-2 mb-2">
+                                  <h4 className="text-base font-semibold text-gray-900">{test.testCaseTitle}</h4>
+                                  {test.webUrl && (
+                                    <a
+                                      href={test.webUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-blue-600 hover:text-blue-800 text-sm"
+                                    >
+                                      <FileText className="w-4 h-4" />
+                                    </a>
+                                  )}
+                                </div>
+                                <div className="text-sm text-gray-600 space-y-1">
+                                  <p>Test Case ID: {test.testCaseId}</p>
+                                  <p>Suite: {test.suiteName}</p>
+                                  <p>Failed on: {new Date(test.testResult.completedDate).toLocaleString()}</p>
+                                  <p>Run by: {test.testResult.runBy}</p>
+                                </div>
+                              </div>
+                              <div className={`px-3 py-1 rounded-full text-xs font-medium ${
+                                test.hasBugs 
+                                  ? 'bg-blue-100 text-blue-800' 
+                                  : 'bg-orange-100 text-orange-800'
+                              }`}>
+                                {test.hasBugs ? `${test.bugs.length} Bug(s)` : 'No Bugs'}
+                              </div>
+                            </div>
+
+                            {/* Bugs Section */}
+                            {test.bugs.length > 0 && (
+                              <div className="mt-4 pt-4 border-t border-gray-200">
+                                <h5 className="text-sm font-semibold text-gray-700 mb-2">Linked Bugs:</h5>
+                                <div className="space-y-2">
+                                  {test.bugs.map((bug, bugIdx) => (
+                                    <div key={bugIdx} className={`border rounded p-3 ${
+                                      bug.isSourceBug 
+                                        ? 'bg-blue-50 border-blue-300' 
+                                        : 'bg-gray-50 border-gray-200'
+                                    }`}>
+                                      <div className="flex items-start justify-between">
+                                        <div className="flex-1">
+                                          <div className="flex items-center gap-2 mb-1">
+                                            <a
+                                              href={bug.webUrl}
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                              className="text-blue-600 hover:text-blue-800 font-medium"
+                                            >
+                                              Bug #{bug.id}: {bug.title}
+                                            </a>
+                                            {bug.isSourceBug && (
+                                              <span className="px-2 py-0.5 rounded text-xs font-medium bg-blue-200 text-blue-800">
+                                                Source Bug
+                                              </span>
+                                            )}
+                                            <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                                              bug.status === 'Active' || bug.status === 'New'
+                                                ? 'bg-red-100 text-red-800'
+                                                : bug.status === 'Resolved'
+                                                ? 'bg-yellow-100 text-yellow-800'
+                                                : bug.status === 'Closed'
+                                                ? 'bg-green-100 text-green-800'
+                                                : 'bg-gray-100 text-gray-800'
+                                            }`}>
+                                              {bug.status}
+                                            </span>
+                                          </div>
+                                          <p className="text-xs text-gray-600">Assigned to: {bug.assignedTo}</p>
+                                          {bug.attachments.length > 0 && (
+                                            <div className="mt-2">
+                                              <p className="text-xs text-gray-600 font-medium mb-1">Attachments:</p>
+                                              <div className="flex flex-wrap gap-2">
+                                                {bug.attachments.map((att, attIdx) => (
+                                                  <span key={attIdx} className="text-xs bg-white border border-gray-300 rounded px-2 py-1">
+                                                    {att.name}
+                                                  </span>
+                                                ))}
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Update Tests in ADO Tab */}
+            {activeTab === 'update-ado' && updateScanResults && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Update Tests in ADO</h2>
+                    <p className="text-sm text-gray-600 mt-1">Select tests to update their steps, description, and tags in Azure DevOps</p>
+                  </div>
+                  <button
+                    onClick={handleUpdateInAdo}
+                    disabled={isUpdatingInAdo || selectedTestsForUpdate.size === 0 || !Array.from(selectedTestsForUpdate).some(key => {
+                      const [, testCaseId] = key.split('|');
+                      return hasChanges(testCaseId);
+                    })}
+                    className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                  >
+                    {isUpdatingInAdo ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Updating...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle className="w-4 h-4" />
+                        Update in ADO ({selectedTestsForUpdate.size})
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {updateScanResults.length === 0 ? (
+                  <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                    <p className="text-sm text-yellow-800">No tests found with ADO IDs. Please scan your repository first.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    {updateScanResults.map((file) => (
+                      <div key={file.filePath} className="border border-gray-200 rounded-lg overflow-hidden">
+                        <div className="px-4 py-3 bg-gray-50 border-b border-gray-200">
+                          <h3 className="font-semibold text-gray-900">{file.fileName}</h3>
+                          <p className="text-xs text-gray-500 mt-1">{file.filePath}</p>
+                        </div>
+                        <div className="p-4 space-y-3">
+                          {file.testMethods.map((test) => {
+                            const testKey = `${test.name}|${test.testCaseId}`;
+                            const isSelected = selectedTestsForUpdate.has(testKey);
+                            const testCaseId = test.testCaseId;
+                            const isEditing = editingTestCase === testCaseId;
+                            const details = testCaseDetails[testCaseId];
+                            const edited = editedTestCaseData[testCaseId];
+                            const hasUnsavedChanges = hasChanges(testCaseId);
+
+                            return (
+                              <div key={testKey} className="border border-gray-200 rounded-lg p-4">
+                                <div className="flex items-center justify-between mb-3">
+                                  <div className="flex items-center gap-3 flex-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={isSelected}
+                                      onChange={() => {
+                                        const newSet = new Set(selectedTestsForUpdate);
+                                        if (isSelected) {
+                                          newSet.delete(testKey);
+                                        } else {
+                                          newSet.add(testKey);
+                                        }
+                                        setSelectedTestsForUpdate(newSet);
+                                      }}
+                                      className="w-4 h-4 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                                    />
+                                    <div className="flex-1">
+                                      <h4 className="font-semibold text-gray-900">{test.name}</h4>
+                                      <p className="text-xs text-gray-500">ADO ID: {testCaseId}</p>
+                                    </div>
+                                    {hasUnsavedChanges && (
+                                      <span className="px-2 py-1 bg-amber-100 text-amber-800 text-xs rounded font-medium">
+                                        Unsaved Changes
+                                      </span>
+                                    )}
+                                  </div>
+                                  <button
+                                    onClick={() => {
+                                      if (isEditing) {
+                                        setEditingTestCase(null);
+                                      } else {
+                                        handleViewSteps(testCaseId, test.name);
+                                      }
+                                    }}
+                                    disabled={isLoadingTestCaseDetails}
+                                    className="flex items-center gap-2 px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                                  >
+                                    {isLoadingTestCaseDetails && editingTestCase === testCaseId ? (
+                                      <>
+                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                        Loading...
+                                      </>
+                                    ) : isEditing ? (
+                                      'Close'
+                                    ) : (
+                                      <>
+                                        <FileText className="w-4 h-4" />
+                                        View Steps
+                                      </>
+                                    )}
+                                  </button>
+                                </div>
+
+                                {isEditing && details && (
+                                  <div className="mt-4 pt-4 border-t border-gray-200 space-y-4">
+                                    {/* Description */}
+                                    <div>
+                                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Description
+                                      </label>
+                                      <textarea
+                                        value={edited?.description || ''}
+                                        onChange={(e) => handleUpdateDescription(testCaseId, e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        rows={3}
+                                      />
+                                    </div>
+
+                                    {/* Tags */}
+                                    <div>
+                                      <label className="block text-sm font-medium text-gray-700 mb-2">
+                                        Tags (comma-separated)
+                                      </label>
+                                      <input
+                                        type="text"
+                                        value={(edited?.tags || []).join(', ')}
+                                        onChange={(e) => handleUpdateTags(testCaseId, e.target.value)}
+                                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                                        placeholder="tag1, tag2, tag3"
+                                      />
+                                    </div>
+
+                                    {/* Steps */}
+                                    <div>
+                                      <div className="flex items-center justify-between mb-2">
+                                        <label className="block text-sm font-medium text-gray-700">
+                                          Test Steps
+                                        </label>
+                                        <div className="flex gap-2">
+                                          <button
+                                            onClick={() => handleGenerateSteps(testCaseId, test.name, test.code)}
+                                            disabled={isGeneratingSteps || !openAiConfigured}
+                                            className="flex items-center gap-1 px-2 py-1 text-xs bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                          >
+                                            {isGeneratingSteps ? (
+                                              <Loader2 className="w-3 h-3 animate-spin" />
+                                            ) : (
+                                              <Lightbulb className="w-3 h-3" />
+                                            )}
+                                            Generate Steps
+                                          </button>
+                                          <button
+                                            onClick={() => handleAddStep(testCaseId)}
+                                            className="flex items-center gap-1 px-2 py-1 text-xs bg-green-600 text-white rounded hover:bg-green-700"
+                                          >
+                                            <Plus className="w-3 h-3" />
+                                            Add Step
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <div className="space-y-2">
+                                        {(edited?.steps || []).map((step, stepIdx) => (
+                                          <div key={stepIdx} className="border border-gray-200 rounded-lg p-3 bg-gray-50">
+                                            <div className="flex items-start gap-2 mb-2">
+                                              <span className="flex-shrink-0 w-6 h-6 bg-blue-100 text-blue-800 rounded-full flex items-center justify-center text-xs font-bold mt-1">
+                                                {stepIdx + 1}
+                                              </span>
+                                              <div className="flex-1 space-y-2">
+                                                <div>
+                                                  <label className="block text-xs font-medium text-gray-600 mb-1">Action</label>
+                                                  <textarea
+                                                    value={step.action || ''}
+                                                    onChange={(e) => handleUpdateStep(testCaseId, stepIdx, 'action', e.target.value)}
+                                                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-transparent"
+                                                    rows={2}
+                                                  />
+                                                </div>
+                                                <div>
+                                                  <label className="block text-xs font-medium text-gray-600 mb-1">Expected Result</label>
+                                                  <textarea
+                                                    value={step.expectedResult || ''}
+                                                    onChange={(e) => handleUpdateStep(testCaseId, stepIdx, 'expectedResult', e.target.value)}
+                                                    className="w-full px-2 py-1 text-sm border border-gray-300 rounded focus:ring-1 focus:ring-blue-500 focus:border-transparent"
+                                                    rows={2}
+                                                  />
+                                                </div>
+                                              </div>
+                                              <div className="flex flex-col gap-1 flex-shrink-0">
+                                                <button
+                                                  onClick={() => handleMoveStep(testCaseId, stepIdx, 'up')}
+                                                  disabled={stepIdx === 0}
+                                                  className="p-1 text-gray-600 hover:text-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                  title="Move up"
+                                                >
+                                                  ↑
+                                                </button>
+                                                <button
+                                                  onClick={() => handleMoveStep(testCaseId, stepIdx, 'down')}
+                                                  disabled={stepIdx === (edited?.steps || []).length - 1}
+                                                  className="p-1 text-gray-600 hover:text-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                  title="Move down"
+                                                >
+                                                  ↓
+                                                </button>
+                                                <button
+                                                  onClick={() => handleDeleteStep(testCaseId, stepIdx)}
+                                                  className="p-1 text-red-600 hover:text-red-800"
+                                                  title="Delete step"
+                                                >
+                                                  <X className="w-4 h-4" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        ))}
+                                        {(!edited?.steps || edited.steps.length === 0) && (
+                                          <p className="text-sm text-gray-500 text-center py-4">No steps. Click "Add Step" to add one.</p>
+                                        )}
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>

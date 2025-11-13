@@ -49,15 +49,6 @@ describe('OpenAIService', () => {
     });
   });
 
-  describe('setClient', () => {
-    it('should set a new client', () => {
-      openaiService = new OpenAIService();
-      openaiService.setClient('new-api-key');
-      expect(OpenAI).toHaveBeenCalledWith({ apiKey: 'new-api-key' });
-      expect(openaiService.isConfigured()).toBe(true);
-    });
-  });
-
   describe('isConfigured', () => {
     it('should return false when client is null', () => {
       openaiService = new OpenAIService();
@@ -481,7 +472,7 @@ describe('OpenAIService', () => {
 
       mockClient.chat.completions.create.mockResolvedValue(mockResponse);
 
-      const longContext = 'x'.repeat(5000);
+      const longContext = 'x'.repeat(15000);
       const tests = [{ name: 'Test1', code: 'code' }];
 
       await openaiService.extractDomainConcepts(tests, longContext);
@@ -498,7 +489,11 @@ describe('OpenAIService', () => {
       
       expect(contextMatch).toBeTruthy();
       if (contextMatch && contextMatch[1]) {
-        expect(contextMatch[1].length).toBe(3000);
+        // Context is truncated to 10000 characters when longer than 10000
+        // The truncation message adds extra characters, so we check it's approximately 10000
+        const contextLength = contextMatch[1].length;
+        expect(contextLength).toBeGreaterThanOrEqual(10000);
+        expect(contextLength).toBeLessThan(10100); // Allow for truncation message
       }
     });
   });

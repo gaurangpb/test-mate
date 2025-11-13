@@ -141,6 +141,53 @@ router.post('/test-files-list', async (req, res) => {
   }
 });
 
+// Generate steps for existing test case (merge with existing steps)
+router.post('/generate-steps', async (req, res) => {
+  const { openaiService, fileUtils } = req.app.locals;
+  
+  try {
+    const { testCode, existingSteps, testName, domainContextPath } = req.body;
+    
+    if (!openaiService.isConfigured()) {
+      return res.status(400).json({ error: 'OpenAI client not configured' });
+    }
+
+    if (!testCode) {
+      return res.status(400).json({ error: 'Test code is required' });
+    }
+
+    // Read domain context if provided
+    let domainContext = null;
+    if (domainContextPath) {
+      try {
+        domainContext = await fileUtils.readDomainContext(domainContextPath);
+      } catch (contextError) {
+        console.warn(`Failed to load domain context: ${contextError.message}`);
+      }
+    }
+
+    console.log(`Generating steps for test: ${testName || 'Unknown'}`);
+
+    const generatedSteps = await openaiService.generateStepsForTest({
+      testCode,
+      existingSteps: existingSteps || [],
+      testName: testName || 'Test',
+      domainContext
+    });
+
+    res.json({
+      success: true,
+      steps: generatedSteps
+    });
+  } catch (error) {
+    console.error('Generate steps error:', error);
+    res.status(500).json({ 
+      error: error.message,
+      details: 'Check server logs for more information'
+    });
+  }
+});
+
 // Suggest domain context updates based on test analysis
 router.post('/suggest-context-updates', async (req, res) => {
   const { openaiService, fileParserService, fileUtils } = req.app.locals;

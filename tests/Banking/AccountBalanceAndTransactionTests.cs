@@ -34,7 +34,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(transactionCount, Is.GreaterThan(0), "Should display recent transactions");
         }
 
-        [Property("ADOTestCaseId", "100002")]
         [Test, HUST]
         public async Task FilterTransactionsByDateRange()
         {
@@ -53,6 +52,7 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(bankingPage.AreTransactionsInDateRange(startDate, endDate), Is.True, "All transactions should be within date range");
         }
 
+        [Property("ADOTestCaseId", "1185073")]
         [Test, HUST]
         public async Task ExportTransactionHistoryToPdf()
         {
@@ -67,7 +67,6 @@ namespace MyTestAutomation.Tests.Banking
             Assert.That(bankingPage.IsPdfValid(exportPath), Is.True, "PDF should be valid");
         }
 
-        [Property("ADOTestCaseId", "100001")]
         [Test, HUST]
         public async Task ViewAccountStatementForCurrentMonth()
         {
