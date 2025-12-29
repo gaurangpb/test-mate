@@ -42,6 +42,30 @@ if not exist client\node_modules (
     echo.
 )
 
+REM Check if Roslyn parser is built
+if not exist roslyn-parser\bin\Release\net8.0\RoslynParser.exe (
+    echo.
+    echo Roslyn parser not found. Building it now...
+    echo.
+    call npm run build:roslyn
+    if errorlevel 1 (
+        echo.
+        echo WARNING: Failed to build Roslyn parser!
+        echo C# parsing features will not work until the parser is built.
+        echo.
+        echo To build manually:
+        echo   1. Install .NET 8 SDK from https://dotnet.microsoft.com/download/dotnet/8.0
+        echo   2. Run: npm run build:roslyn
+        echo.
+        echo Continuing to start server anyway...
+        echo.
+        timeout /t 2 /nobreak >nul
+    ) else (
+        echo Roslyn parser built successfully!
+        echo.
+    )
+)
+
 echo Starting servers...
 echo Backend will run on: http://localhost:3001
 echo Frontend will run on: http://localhost:3000

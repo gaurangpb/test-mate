@@ -4,6 +4,7 @@
   "description": "TestMate - Automated test documentation generator for Azure DevOps",
   "main": "server.js",
   "scripts": {
+    "build:roslyn": "node build-roslyn-parser.js",
     "start": "node server.js",
     "dev": "nodemon server.js",
     "client": "cd client && npm start",

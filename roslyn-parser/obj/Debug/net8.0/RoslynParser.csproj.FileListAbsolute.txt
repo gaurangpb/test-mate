@@ -1,0 +1,6 @@
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.csproj.AssemblyReference.cache
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.GeneratedMSBuildEditorConfig.editorconfig
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.AssemblyInfoInputs.cache
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.AssemblyInfo.cs
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.csproj.CoreCompileInputs.cache
+C:\workspace\test-mate\roslyn-parser\obj\Debug\net8.0\RoslynParser.sourcelink.json

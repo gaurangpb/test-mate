@@ -30,6 +30,7 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
 
 - **Node.js** (v14 or higher)
 - **npm** (v6 or higher)
+- **.NET 8 SDK** ([Download here](https://dotnet.microsoft.com/download/dotnet/8.0)) - Required for C# parsing with Roslyn
 - **OpenAI API Key** ([Get one here](https://platform.openai.com/api-keys))
 - **Azure DevOps Personal Access Token** (optional, for ADO integration)
 
@@ -43,7 +44,21 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
    npm install
    ```
 
-3. **Install frontend dependencies**:
+3. **Build the Roslyn parser** (required for C# file parsing):
+
+   ```bash
+   npm run build:roslyn
+   ```
+
+   Or manually:
+   
+   ```bash
+   cd roslyn-parser
+   dotnet build -c Release
+   cd ..
+   ```
+
+4. **Install frontend dependencies**:
 
    ```bash
    cd client
@@ -51,7 +66,7 @@ An automated test documentation generator for Azure DevOps that scans C# NUnit t
    cd ..
    ```
 
-4. **Set up environment variables**:
+5. **Set up environment variables**:
 
    - Copy `.env.example` to `.env`
    - Edit `.env` and add your configuration:

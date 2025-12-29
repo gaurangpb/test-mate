@@ -1,20 +1,47 @@
 const FileParserService = require('../fileParserService');
 const fs = require('fs').promises;
+const { spawn } = require('child_process');
+
 // Mock fs module
 jest.mock('fs', () => ({
   promises: {
     readFile: jest.fn(),
     readdir: jest.fn()
-  }
+  },
+  existsSync: jest.fn()
+}));
+
+// Mock child_process
+jest.mock('child_process', () => ({
+  spawn: jest.fn()
 }));
 
 describe('FileParserService', () => {
   let fileParserService;
+  let mockSpawn;
 
   beforeEach(() => {
     fileParserService = new FileParserService();
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
+    
+    // Setup default mock for spawn
+    mockSpawn = {
+      stdin: {
+        write: jest.fn(),
+        end: jest.fn()
+      },
+      stdout: {
+        on: jest.fn()
+      },
+      stderr: {
+        on: jest.fn()
+      },
+      on: jest.fn()
+    };
+    
+    spawn.mockReturnValue(mockSpawn);
+    require('fs').existsSync.mockReturnValue(false); // Default to using dotnet run
   });
 
   afterEach(() => {
@@ -22,8 +49,42 @@ describe('FileParserService', () => {
     jest.clearAllMocks();
   });
 
+  // Helper function to simulate Roslyn parser response
+  function mockRoslynResponse(response) {
+    const responseJson = JSON.stringify(response);
+    let stdoutCallback;
+    let closeCallback;
+    
+    mockSpawn.stdout.on.mockImplementation((event, callback) => {
+      if (event === 'data') {
+        stdoutCallback = callback;
+      }
+    });
+    
+    mockSpawn.stderr.on.mockImplementation(() => {});
+    
+    mockSpawn.on.mockImplementation((event, callback) => {
+      if (event === 'close') {
+        closeCallback = callback;
+        // Simulate receiving data and closing
+        setTimeout(() => {
+          if (stdoutCallback) {
+            stdoutCallback(Buffer.from(responseJson));
+          }
+          if (closeCallback) {
+            closeCallback(0);
+          }
+        }, 0);
+      }
+    });
+    
+    return new Promise((resolve) => {
+      setTimeout(resolve, 10);
+    });
+  }
+
   describe('parseTestMethods', () => {
-    it('should parse test methods without IDs', () => {
+    it('should parse test methods without IDs', async () => {
       const content = `
         [Test]
         public void TestMethod1() {
@@ -37,14 +98,22 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.parseTestMethods(content, 'ADOTestCaseId');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' },
+          { name: 'TestMethod2', hasTestCaseId: true, adoId: '123', tags: [], hasTestCaseParams: false, code: 'public void TestMethod2() { }' }
+        ]
+      });
+
+      const result = await fileParserService.parseTestMethods(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result).toHaveLength(1);
       expect(result[0].name).toBe('TestMethod1');
       expect(result[0].hasTestCaseId).toBe(false);
     });
 
-    it('should not include test methods with IDs', () => {
+    it('should not include test methods with IDs', async () => {
       const content = `
         [Test]
         [Property("ADOTestCaseId", "123")]
@@ -53,12 +122,19 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.parseTestMethods(content, 'ADOTestCaseId');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: true, adoId: '123', tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.parseTestMethods(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result).toHaveLength(0);
     });
 
-    it('should handle custom property names', () => {
+    it('should handle custom property names', async () => {
       const content = `
         [Test]
         public void TestMethod1() {
@@ -66,14 +142,21 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.parseTestMethods(content, 'CustomProperty');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.parseTestMethods(content, 'CustomProperty', '/path/to/file.cs');
       
       expect(result).toHaveLength(1);
     });
   });
 
   describe('analyzeTestFile', () => {
-    it('should analyze test file with class name', () => {
+    it('should analyze test file with class name', async () => {
       const content = `
         [TestFixture]
         public class MyTestClass {
@@ -83,7 +166,14 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'MyTestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.className).toBe('MyTestClass');
       expect(result.tests).toHaveLength(1);
@@ -91,7 +181,7 @@ describe('FileParserService', () => {
       expect(result.tests[0].hasTestCaseId).toBe(false);
     });
 
-    it('should detect test case IDs', () => {
+    it('should detect test case IDs', async () => {
       const content = `
         [Test]
         [Property("ADOTestCaseId", "123")]
@@ -99,14 +189,21 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: true, adoId: '123', tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(1);
       expect(result.tests[0].hasTestCaseId).toBe(true);
       expect(result.tests[0].adoId).toBe('123');
     });
 
-    it('should extract tags from Category attributes', () => {
+    it('should extract tags from Category attributes', async () => {
       const content = `
         [Test]
         [Category("Smoke")]
@@ -115,14 +212,21 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: ['Smoke', 'Regression'], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(1);
       expect(result.tests[0].tags).toContain('Smoke');
       expect(result.tests[0].tags).toContain('Regression');
     });
 
-    it('should extract class-level tags', () => {
+    it('should extract class-level tags', async () => {
       const content = `
         [Category("Integration")]
         [TestFixture]
@@ -133,13 +237,20 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'MyTestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: ['Integration'], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(1);
       expect(result.tests[0].tags).toContain('Integration');
     });
 
-    it('should exclude setup/teardown methods', () => {
+    it('should exclude setup/teardown methods', async () => {
       const content = `
         [TestFixture]
         public class MyTestClass {
@@ -153,43 +264,17 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'MyTestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(1);
       expect(result.tests[0].name).toBe('TestMethod1');
-    });
-  });
-
-  describe('extractMethodCode', () => {
-    it('should extract method code correctly', () => {
-      const content = `
-        public void TestMethod() {
-          var x = 1;
-          var y = 2;
-        }
-      `;
-
-      const startIndex = content.indexOf('public void TestMethod');
-      const result = fileParserService.extractMethodCode(content, startIndex);
-      
-      expect(result).toContain('TestMethod');
-      expect(result).toContain('var x = 1');
-    });
-
-    it('should handle nested braces', () => {
-      const content = `
-        public void TestMethod() {
-          if (true) {
-            var x = 1;
-          }
-        }
-      `;
-
-      const startIndex = content.indexOf('public void TestMethod');
-      const result = fileParserService.extractMethodCode(content, startIndex);
-      
-      expect(result).toContain('TestMethod');
-      expect(result).toContain('if (true)');
     });
   });
 
@@ -249,6 +334,13 @@ describe('FileParserService', () => {
 
       fs.readFile = jest.fn().mockResolvedValue(testContent);
 
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestMethod1', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: 'public void TestMethod1() { }' }
+        ]
+      });
+
       const result = await fileParserService.scanForTestsWithoutIds('/test/path', 'ADOTestCaseId');
       
       expect(result).toHaveLength(1);
@@ -269,7 +361,7 @@ describe('FileParserService', () => {
 
   // Comprehensive edge case tests for the parsing engine
   describe('analyzeTestFile - Edge Cases', () => {
-    it('should correctly handle mixed tests with and without IDs (bug regression test)', () => {
+    it('should correctly handle mixed tests with and without IDs (bug regression test)', async () => {
       const content = `
         namespace Web.Tests.API.Unit.Tests
         {
@@ -315,7 +407,18 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'CorrespondenceIopV1Tests',
+        tests: [
+          { name: 'CorrespondenceApiPingTest', hasTestCaseId: true, adoId: '1182313', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'CorrespondenceApiHealthTest', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'CorrespondenceIopVOutboundInitiatePOSTTest', hasTestCaseId: true, adoId: '1182327', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'CorrespondenceIopV1OutboundInitiateGETTest', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'CorrespondenceIopV1OutboundRetrieveTest', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(5);
       
@@ -347,7 +450,7 @@ describe('FileParserService', () => {
       expect(withoutIds).toBe(3);
     });
 
-    it('should handle multiple Property attributes correctly', () => {
+    it('should handle multiple Property attributes correctly', async () => {
       const content = `
         [Test]
         [Property("Title", "Test Title")]
@@ -365,7 +468,15 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestWithMultipleProperties', hasTestCaseId: true, adoId: '123456', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'TestWithoutADOId', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(2);
       expect(result.tests[0].hasTestCaseId).toBe(true);
@@ -374,36 +485,7 @@ describe('FileParserService', () => {
       expect(result.tests[1].adoId).toBe(null);
     });
 
-    it('should handle commented out tests with IDs', () => {
-      const content = `
-        [Test]
-        [Property("ADOTestCaseId", "123")]
-        public void ActiveTest()
-        {
-        }
-        
-        // [Test]
-        // [Property("ADOTestCaseId", "456")]
-        // public void CommentedOutTest()
-        // {
-        // }
-        
-        [Test]
-        public void AnotherActiveTest()
-        {
-        }
-      `;
-
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
-      
-      expect(result.tests).toHaveLength(2);
-      expect(result.tests[0].name).toBe('ActiveTest');
-      expect(result.tests[0].hasTestCaseId).toBe(true);
-      expect(result.tests[1].name).toBe('AnotherActiveTest');
-      expect(result.tests[1].hasTestCaseId).toBe(false);
-    });
-
-    it('should handle class-level and method-level attributes together', () => {
+    it('should handle class-level and method-level attributes together', async () => {
       const content = `
         [Category("Integration")]
         [Category("Smoke")]
@@ -425,7 +507,15 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'MixedAttributeTests',
+        tests: [
+          { name: 'TestWithBothLevels', hasTestCaseId: true, adoId: '111', tags: ['Integration', 'Smoke', 'Fast'], hasTestCaseParams: false, code: '' },
+          { name: 'TestMethodLevelOnly', hasTestCaseId: false, adoId: null, tags: ['Integration', 'Smoke', 'Slow'], hasTestCaseParams: false, code: '' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(2);
       
@@ -440,11 +530,9 @@ describe('FileParserService', () => {
       expect(result.tests[1].hasTestCaseId).toBe(false);
       expect(result.tests[1].adoId).toBe(null);
       expect(result.tests[1].tags).toContain('Slow');
-      // Note: Class-level tags might not propagate to all methods consistently
-      // This is expected behavior based on current implementation
     });
 
-    it('should handle custom property names', () => {
+    it('should handle custom property names', async () => {
       const content = `
         [Test]
         [Property("CustomTestId", "CUSTOM123")]
@@ -459,7 +547,15 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'CustomTestId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'TestClass',
+        tests: [
+          { name: 'TestWithCustomProperty', hasTestCaseId: true, adoId: 'CUSTOM123', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'TestWithADOProperty', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'CustomTestId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(2);
       expect(result.tests[0].hasTestCaseId).toBe(true);
@@ -468,81 +564,7 @@ describe('FileParserService', () => {
       expect(result.tests[1].adoId).toBe(null);
     });
 
-    it('should handle very complex attribute arrangements', () => {
-      const content = `
-        [Category("IntegrationTests")]
-        [TestFixture]
-        public class ComplexTests
-        {
-            [SetUp]
-            public void Setup()
-            {
-            }
-            
-            [Test, Category("Fast"), Category("Smoke")]
-            [Property("Priority", "High")]
-            [Property("ADOTestCaseId", "COMPLEX001")]
-            [Property("Author", "Developer")]
-            public async Task ComplexTestMethod()
-            {
-                await Task.Delay(1);
-            }
-            
-            [Test]
-            [Category("Integration")]
-            public void MethodWithoutId()
-            {
-            }
-            
-            [TestCase("param1")]
-            [Property("ADOTestCaseId", "COMPLEX002")]
-            public void ParameterizedTestWithId(string param)
-            {
-            }
-            
-            [TestCase("param1")]
-            public void ParameterizedTestWithoutId(string param)
-            {
-            }
-            
-            [TearDown]
-            public void TearDown()
-            {
-            }
-        }
-      `;
-
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
-      
-      // Note: TestCase attributes may create multiple entries, and Setup/TearDown should be excluded
-      expect(result.tests.length).toBeGreaterThanOrEqual(4); // At least 4 test methods
-      
-      const testsWithIds = result.tests.filter(t => t.hasTestCaseId);
-      const testsWithoutIds = result.tests.filter(t => !t.hasTestCaseId);
-      
-      expect(testsWithIds.length).toBeGreaterThanOrEqual(2);
-      expect(testsWithoutIds.length).toBeGreaterThanOrEqual(2);
-      
-      // Verify specific tests exist
-      const complexTest = result.tests.find(t => t.name === 'ComplexTestMethod');
-      expect(complexTest).toBeDefined();
-      expect(complexTest.hasTestCaseId).toBe(true);
-      expect(complexTest.adoId).toBe('COMPLEX001');
-      
-      const parameterizedWithId = result.tests.find(t => t.name === 'ParameterizedTestWithId');
-      expect(parameterizedWithId).toBeDefined();
-      expect(parameterizedWithId.hasTestCaseId).toBe(true);
-      expect(parameterizedWithId.adoId).toBe('COMPLEX002');
-      expect(parameterizedWithId.hasTestCaseParams).toBe(true);
-      
-      // Verify Setup and TearDown are excluded
-      const setupMethod = result.tests.find(t => t.name === 'Setup');
-      const tearDownMethod = result.tests.find(t => t.name === 'TearDown');
-      expect(setupMethod).toBeUndefined();
-      expect(tearDownMethod).toBeUndefined();
-    });
-
-    it('should handle adjacent tests without cross-contamination', () => {
+    it('should handle adjacent tests without cross-contamination', async () => {
       const content = `
         public class AdjacentTests
         {
@@ -565,7 +587,18 @@ describe('FileParserService', () => {
         }
       `;
 
-      const result = fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
+      await mockRoslynResponse({
+        className: 'AdjacentTests',
+        tests: [
+          { name: 'FirstTestWithId', hasTestCaseId: true, adoId: 'ADJ001', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'SecondTestNoId', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'ThirdTestNoId', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'FourthTestWithId', hasTestCaseId: true, adoId: 'ADJ002', tags: [], hasTestCaseParams: false, code: '' },
+          { name: 'FifthTestNoId', hasTestCaseId: false, adoId: null, tags: [], hasTestCaseParams: false, code: '' }
+        ]
+      });
+
+      const result = await fileParserService.analyzeTestFile(content, 'ADOTestCaseId', '/path/to/file.cs');
       
       expect(result.tests).toHaveLength(5);
       
@@ -591,4 +624,3 @@ describe('FileParserService', () => {
     });
   });
 });
-

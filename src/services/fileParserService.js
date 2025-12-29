@@ -1,23 +1,149 @@
 const fs = require('fs').promises;
 const path = require('path');
+const { spawn } = require('child_process');
 
 /**
- * File parsing service for C# test files
+ * File parsing service for C# test files using Roslyn
  */
 class FileParserService {
   constructor() {
-    // Pre-compile regex patterns for better performance
     this.SKIP_DIRECTORIES = new Set(['bin', 'obj', 'node_modules', '.git', 'packages', '.vs', 'TestResults', '.vscode']);
-    this.TEST_METHOD_PATTERN = /\[Test(?:\s*[,\]])[^\{]*?(public\s+(?:async\s+)?(?:Task\s+|void\s+)(\w+)\s*\([^\)]*\)\s*\{[^}]*(?:\{[^}]*\}[^}]*)*\})/gs;
-    this.CLASS_MATCH_PATTERN = /\[TestFixture[^\]]*\][\s\S]*?public\s+class\s+(\w+)/;
-    this.CLASS_FALLBACK_PATTERN = /public\s+class\s+(\w+)/;
-    this.TEST_FIXTURE_PATTERN = /\[TestFixture(?:[^\]]*)\]/;
-    this.CATEGORY_PATTERN = /\[Category\s*\(\s*["']([^"']+)["']/gi;
-    this.TAG_PATTERN = /\[Tag\s*\(\s*["']([^"']+)["']/gi;
-    this.BEFORE_CLASS_ATTR_PATTERN = /(\[Category\s*\([^\]]+\)\s*)+\[TestFixture/;
-    this.TEST_ATTRIBUTE_PATTERN = /(?:^|\n)\s*\[(?:Test|TestCase)(?:\s*,|\s*\]|\s*\()/gm;
-    this.METHOD_SIGNATURE_PATTERN = /(public\s+(?:async\s+Task\s+|Task\s+|void\s+)(\w+)\s*\([^\)]*\))/;
-    this.EXCLUDED_METHODS = new Set(['Setup', 'TearDown', 'SetUp', 'OneTimeSetUp', 'OneTimeTearDown']);
+    const isWindows = process.platform === 'win32';
+    const exeName = isWindows ? 'RoslynParser.exe' : 'RoslynParser';
+    this.roslynParserPath = path.join(__dirname, '../../roslyn-parser/bin/Release/net8.0', exeName);
+  }
+
+  /**
+   * Call Roslyn parser to analyze a C# file
+   */
+  async callRoslynParser(filePath, content, testPropertyName) {
+    return new Promise((resolve, reject) => {
+      const request = {
+        filePath: filePath,
+        content: content,
+        testPropertyName: testPropertyName || 'ADOTestCaseId'
+      };
+
+      // Try to find the Roslyn parser executable
+      let parserExe = this.roslynParserPath;
+      const fsSync = require('fs');
+      
+      // Fallback: try to find it in common locations
+      if (!fsSync.existsSync(parserExe)) {
+        // Try Debug build
+        const isWindows = process.platform === 'win32';
+        const exeName = isWindows ? 'RoslynParser.exe' : 'RoslynParser';
+        parserExe = path.join(__dirname, '../../roslyn-parser/bin/Debug/net8.0', exeName);
+      }
+
+      if (!fsSync.existsSync(parserExe)) {
+        // Try dotnet run as fallback
+        const projectPath = path.join(__dirname, '../../roslyn-parser');
+        const dotnetProcess = spawn('dotnet', ['run', '--project', path.join(projectPath, 'RoslynParser.csproj')], {
+          cwd: projectPath,
+          stdio: ['pipe', 'pipe', 'pipe']
+        });
+
+        let stdout = '';
+        let stderr = '';
+
+        dotnetProcess.stdout.on('data', (data) => {
+          stdout += data.toString();
+        });
+
+        dotnetProcess.stderr.on('data', (data) => {
+          stderr += data.toString();
+        });
+
+        dotnetProcess.on('close', (code) => {
+          if (code !== 0) {
+            console.error(`DEBUG: Roslyn parser (dotnet run) exited with code ${code}`);
+            console.error(`DEBUG: Roslyn parser stderr: ${stderr}`);
+            console.error(`DEBUG: Roslyn parser stdout: ${stdout}`);
+            reject(new Error(`Roslyn parser failed: ${stderr || 'Unknown error'}`));
+            return;
+          }
+
+          try {
+            console.log(`DEBUG: Roslyn parser (dotnet run) stdout (raw): ${stdout.substring(0, 500)}`);
+            const response = JSON.parse(stdout);
+            console.log(`DEBUG: Roslyn parser (dotnet run) response parsed:`, JSON.stringify(response, null, 2).substring(0, 1000));
+            if (response.error) {
+              reject(new Error(response.error));
+            } else {
+              resolve(response);
+            }
+          } catch (parseError) {
+            console.error(`DEBUG: Failed to parse Roslyn response. stdout: ${stdout.substring(0, 500)}`);
+            reject(new Error(`Failed to parse Roslyn parser response: ${parseError.message}`));
+          }
+        });
+
+        dotnetProcess.on('error', (error) => {
+          if (error.code === 'ENOENT') {
+            reject(new Error('Roslyn parser not available. Please install .NET 8 SDK and run: npm run build:roslyn'));
+          } else {
+            reject(new Error(`Failed to start Roslyn parser: ${error.message}. Make sure .NET 8 SDK is installed.`));
+          }
+        });
+
+        dotnetProcess.stdin.write(JSON.stringify(request) + '\n');
+        dotnetProcess.stdin.end();
+
+        return;
+      }
+
+      // Use the compiled executable
+      const parserProcess = spawn(parserExe, [], {
+        stdio: ['pipe', 'pipe', 'pipe']
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      parserProcess.stdout.on('data', (data) => {
+        stdout += data.toString();
+      });
+
+      parserProcess.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
+      parserProcess.on('close', (code) => {
+        if (code !== 0) {
+          console.error(`DEBUG: Roslyn parser process exited with code ${code}`);
+          console.error(`DEBUG: Roslyn parser stderr: ${stderr}`);
+          console.error(`DEBUG: Roslyn parser stdout: ${stdout}`);
+          reject(new Error(`Roslyn parser failed: ${stderr || 'Unknown error'}`));
+          return;
+        }
+
+        try {
+          console.log(`DEBUG: Roslyn parser stdout (raw): ${stdout.substring(0, 500)}`);
+          const response = JSON.parse(stdout);
+          console.log(`DEBUG: Roslyn parser response parsed:`, JSON.stringify(response, null, 2).substring(0, 1000));
+          if (response.error) {
+            reject(new Error(response.error));
+          } else {
+            resolve(response);
+          }
+        } catch (parseError) {
+          console.error(`DEBUG: Failed to parse Roslyn response. stdout: ${stdout.substring(0, 500)}`);
+          reject(new Error(`Failed to parse Roslyn parser response: ${parseError.message}`));
+        }
+      });
+
+      parserProcess.on('error', (error) => {
+        if (error.code === 'ENOENT') {
+          reject(new Error('Roslyn parser executable not found. Please run: npm run build:roslyn'));
+        } else {
+          reject(new Error(`Failed to start Roslyn parser: ${error.message}. Make sure .NET 8 SDK is installed and the parser is built.`));
+        }
+      });
+
+      parserProcess.stdin.write(JSON.stringify(request) + '\n');
+      parserProcess.stdin.end();
+    });
   }
 
   async scanForTestsWithoutIds(repoPath, testPropertyName) {
@@ -35,11 +161,11 @@ class FileParserService {
       try {
         console.log(`DEBUG: Processing file: ${filePath}`);
         const fileContent = await fs.readFile(filePath, 'utf-8');
-        const testMethods = this.parseTestMethods(fileContent, testPropertyName || 'ADOTestCaseId');
+        const testMethods = await this.parseTestMethods(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
         
         if (testMethods.length > 0) {
           // Extract class name from file content
-          const analysis = this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
+          const analysis = await this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
           const className = analysis.className || path.basename(filePath, '.cs');
           
           console.log(`DEBUG: File ${path.basename(filePath)} has ${testMethods.length} tests without IDs`);
@@ -196,7 +322,7 @@ class FileParserService {
     const fileAnalysisPromises = testFiles.map(async (filePath) => {
       try {
         const fileContent = await fs.readFile(filePath, 'utf-8');
-        return this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
+        return await this.analyzeTestFile(fileContent, testPropertyName || 'ADOTestCaseId', filePath);
       } catch (error) {
         console.error(`Error reading file ${filePath}:`, error.message);
         return { className: null, tests: [] };
@@ -217,7 +343,7 @@ class FileParserService {
     analyses.forEach((analysis, index) => {
       const filePath = testFiles[index];
       
-      if (analysis.tests.length > 0) {
+      if (analysis.tests && analysis.tests.length > 0) {
         totalFilesWithTests++;
         const className = analysis.className || path.basename(filePath, '.cs');
         const relativePath = path.relative(repoPath, filePath);
@@ -252,13 +378,15 @@ class FileParserService {
           
           classStats[className].totalTests++;
           
-          test.tags.forEach(tag => {
-            classStats[className].tags.add(tag);
-            if (!tagStats[tag]) {
-              tagStats[tag] = 0;
-            }
-            tagStats[tag]++;
-          });
+          if (test.tags && Array.isArray(test.tags)) {
+            test.tags.forEach(tag => {
+              classStats[className].tags.add(tag);
+              if (!tagStats[tag]) {
+                tagStats[tag] = 0;
+              }
+              tagStats[tag]++;
+            });
+          }
         });
       }
     });
@@ -291,7 +419,7 @@ class FileParserService {
           className: test.className,
           filePath: test.filePath,
           fileName: test.fileName,
-          tags: test.tags,
+          tags: test.tags || [],
           adoId: test.adoId
         });
       }
@@ -385,321 +513,75 @@ class FileParserService {
     return this.findCsFiles(dir, { includeAllCsFiles: true });
   }
 
-  parseTestMethods(content, testPropertyName) {
-    const testMethods = [];
-    
-    const testPropertyPattern = new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${testPropertyName}["']\\s*,`, 'i');
-    
-    console.log(`DEBUG: Scanning for property name: "${testPropertyName}"`);
-    console.log(`DEBUG: Test property pattern: ${testPropertyPattern.source}`);
-    
-    // First, remove commented out sections to avoid parsing commented test attributes
-    const cleanContent = this.removeComments(content);
-    
-    this.TEST_METHOD_PATTERN.lastIndex = 0;
-    let match;
-    while ((match = this.TEST_METHOD_PATTERN.exec(cleanContent)) !== null) {
-      const fullMethod = match[0];
-      const methodName = match[2];
-      const testAttrIndex = match.index;
+  async parseTestMethods(content, testPropertyName, filePath) {
+    try {
+      console.log(`DEBUG: Calling Roslyn parser for ${path.basename(filePath)} with property name: ${testPropertyName}`);
+      const response = await this.callRoslynParser(filePath, content, testPropertyName);
       
-      console.log(`DEBUG: Found test method: ${methodName}`);
-      
-      // Check for property in the matched method (after [Test])
-      let hasTestCaseId = testPropertyPattern.test(fullMethod);
-      
-      // If not found, look backwards from [Test] attribute to find Property attributes
-      // Look up to 500 characters before the [Test] attribute
-      if (!hasTestCaseId && testAttrIndex > 0) {
-        const lookbackStart = Math.max(0, testAttrIndex - 500);
-        const textBeforeTest = cleanContent.substring(lookbackStart, testAttrIndex);
-        
-        // Find the last method end before this test to avoid picking up IDs from previous tests
-        const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
-        let lastMethodEnd = -1;
-        let methodMatch;
-        
-        while ((methodMatch = methodPattern.exec(textBeforeTest)) !== null) {
-          lastMethodEnd = lookbackStart + methodMatch.index + methodMatch[0].length;
-        }
-        
-        // Search in the section between the last method end and the current test
-        const searchStart = lastMethodEnd > -1 ? lastMethodEnd : lookbackStart;
-        const attrSection = cleanContent.substring(searchStart, testAttrIndex + fullMethod.length);
-        
-        hasTestCaseId = testPropertyPattern.test(attrSection);
-        
-        if (hasTestCaseId) {
-          console.log(`DEBUG: Method ${methodName} found Property attribute before [Test]`);
-        }
+      if (response.error) {
+        console.error(`Roslyn parser error for ${path.basename(filePath)}: ${response.error}`);
+        return [];
       }
       
-      console.log(`DEBUG: Method ${methodName} has TestCaseId: ${hasTestCaseId}`);
-      if (hasTestCaseId) {
-        console.log(`DEBUG: Method ${methodName} matched pattern in: ${fullMethod.substring(0, 200)}...`);
+      if (!response.tests) {
+        console.warn(`DEBUG: Roslyn parser returned no tests array for ${path.basename(filePath)}`);
+        return [];
       }
-      
-      if (!hasTestCaseId) {
-        const methodStart = cleanContent.indexOf(match[1]);
-        const methodCode = this.extractMethodCode(cleanContent, methodStart);
-        
-        testMethods.push({
-          name: methodName,
-          hasTestCaseId: false,
-          code: methodCode
-        });
-        
-        console.log(`DEBUG: Added test method without ID: ${methodName}`);
-      }
-    }
-    
-    console.log(`DEBUG: Total test methods without IDs found: ${testMethods.length}`);
-    return testMethods;
-  }
 
-  analyzeTestFile(content, testPropertyName, filePath) {
-    const tests = [];
-    
-    // Remove commented out sections before analysis
-    const cleanContent = this.removeComments(content);
-    
-    let classMatch = this.CLASS_MATCH_PATTERN.exec(cleanContent);
-    if (!classMatch) {
-      this.CLASS_FALLBACK_PATTERN.lastIndex = 0;
-      classMatch = this.CLASS_FALLBACK_PATTERN.exec(cleanContent);
-    }
-    const className = classMatch ? classMatch[1] : null;
-    
-    const classLevelTags = [];
-    this.TEST_FIXTURE_PATTERN.lastIndex = 0;
-    const classFixtureMatch = this.TEST_FIXTURE_PATTERN.exec(cleanContent);
-    if (classFixtureMatch) {
-      const fixtureAttrSection = classFixtureMatch[0];
-      
-      this.CATEGORY_PATTERN.lastIndex = 0;
-      let classCategoryMatch;
-      while ((classCategoryMatch = this.CATEGORY_PATTERN.exec(fixtureAttrSection)) !== null) {
-        classLevelTags.push(classCategoryMatch[1]);
-      }
-      
-      this.TAG_PATTERN.lastIndex = 0;
-      let classTagMatch;
-      while ((classTagMatch = this.TAG_PATTERN.exec(fixtureAttrSection)) !== null) {
-        classLevelTags.push(classTagMatch[1]);
-      }
-    }
-    
-    this.BEFORE_CLASS_ATTR_PATTERN.lastIndex = 0;
-    const beforeClassAttrMatch = this.BEFORE_CLASS_ATTR_PATTERN.exec(cleanContent);
-    if (beforeClassAttrMatch) {
-      const beforeClassSection = beforeClassAttrMatch[0];
-      this.CATEGORY_PATTERN.lastIndex = 0;
-      let beforeClassCategoryMatch;
-      while ((beforeClassCategoryMatch = this.CATEGORY_PATTERN.exec(beforeClassSection)) !== null) {
-        classLevelTags.push(beforeClassCategoryMatch[1]);
-      }
-    }
-    
-    const testPropertyRegex = new RegExp(`\\[(?:Test)?Property\\s*\\(\\s*["']${testPropertyName}["']\\s*,\\s*["']([^"']+)["']\\s*\\)`, 'gi');
-    
-    this.TEST_ATTRIBUTE_PATTERN.lastIndex = 0;
-    let testMatch;
-    while ((testMatch = this.TEST_ATTRIBUTE_PATTERN.exec(cleanContent)) !== null) {
-      const testAttrIndex = testMatch.index;
-      const afterTestAttr = cleanContent.substring(testAttrIndex + testMatch[0].length, testAttrIndex + testMatch[0].length + 2000);
-      
-      this.METHOD_SIGNATURE_PATTERN.lastIndex = 0;
-      const methodMatch = this.METHOD_SIGNATURE_PATTERN.exec(afterTestAttr);
-      if (!methodMatch) continue;
-      
-      const methodName = methodMatch[2];
-      
-      if (this.EXCLUDED_METHODS.has(methodName)) continue;
-      
-      const testAttrStart = testAttrIndex;
-      const methodStart = testAttrIndex + testMatch[0].length + methodMatch.index;
-      
-      // To prevent picking up ADO IDs from previous tests while still allowing class-level attributes,
-      // we need to find the boundary between the previous method and current test
-      let searchStart = 0;
-      
-      // Strategy: Look for the last method closing brace before this test
-      // If found, start after it. If not found, include class-level attributes.
-      const textBeforeTest = cleanContent.substring(0, testAttrStart);
-      
-      // Find all closing braces and their positions
-      const methodPattern = /public\s+(?:async\s+)?(?:Task\s+|void\s+)\w+\s*\([^)]*\)\s*\{[\s\S]*?\}/g;
-      let lastMethodEnd = -1;
-      let match;
-      
-      // Find all method end positions in the text before this test
-      while ((match = methodPattern.exec(textBeforeTest)) !== null) {
-        lastMethodEnd = match.index + match[0].length;
-      }
-      
-      if (lastMethodEnd > -1) {
-        // Start searching after the last method
-        searchStart = lastMethodEnd;
+      console.log(`DEBUG: Roslyn parser returned ${response.tests?.length || 0} tests for ${path.basename(filePath)}`);
+      if (response.tests && response.tests.length > 0) {
+        console.log(`DEBUG: Test details for ${path.basename(filePath)}:`, JSON.stringify(response.tests.map(t => ({
+          name: t.name,
+          hasTestCaseId: t.hasTestCaseId,
+          adoId: t.adoId || null
+        })), null, 2));
       } else {
-        // No previous method found, so we can safely include class-level attributes
-        // Look for the class definition start
-        const classMatch = textBeforeTest.match(/class\s+\w+[^{]*\{/);
-        if (classMatch) {
-          const classStart = textBeforeTest.lastIndexOf(classMatch[0]);
-          // Start searching from before the class to include class-level attributes
-          const beforeClass = textBeforeTest.substring(0, classStart);
-          const lastBraceBeforeClass = beforeClass.lastIndexOf('}');
-          searchStart = lastBraceBeforeClass > -1 ? lastBraceBeforeClass + 1 : 0;
-        }
+        console.log(`DEBUG: No tests found in ${path.basename(filePath)}`);
       }
+
+      // Filter tests without IDs - make sure we're checking each test method individually
+      const allTests = response.tests || [];
+      console.log(`DEBUG: Processing ${allTests.length} total tests, checking each for missing ID...`);
       
-      const methodLineEnd = cleanContent.indexOf('\n', methodStart);
-      const methodSignature = methodMatch[0];
-      const searchEnd = methodLineEnd > -1 ? methodLineEnd : methodStart + methodSignature.length;
-      const attrSection = cleanContent.substring(searchStart, searchEnd);
-      
-      testPropertyRegex.lastIndex = 0;
-      const adoIdMatch = testPropertyRegex.exec(attrSection);
-      const hasTestCaseId = !!adoIdMatch;
-      const adoId = adoIdMatch ? adoIdMatch[1].trim() : null;
-      
-      const tags = [...classLevelTags];
-      this.CATEGORY_PATTERN.lastIndex = 0;
-      let categoryMatch;
-      while ((categoryMatch = this.CATEGORY_PATTERN.exec(attrSection)) !== null) {
-        tags.push(categoryMatch[1]);
-      }
-      
-      this.TAG_PATTERN.lastIndex = 0;
-      let tagMatch;
-      while ((tagMatch = this.TAG_PATTERN.exec(attrSection)) !== null) {
-        tags.push(tagMatch[1]);
-      }
-      
-      const uniqueTags = [...new Set(tags)];
-      
-      tests.push({
-        name: methodName,
-        hasTestCaseId: hasTestCaseId,
-        adoId: adoId,
-        tags: uniqueTags.length > 0 ? uniqueTags : [],
-        hasTestCaseParams: attrSection.includes('[TestCase')
-      });
+      const testsWithoutIds = allTests
+        .filter(test => {
+          // Explicitly check for hasTestCaseId - handle boolean true, string "true", or truthy values
+          const hasId = test.hasTestCaseId === true || test.hasTestCaseId === 'true' || (test.hasTestCaseId && test.adoId);
+          console.log(`DEBUG: Test "${test.name}": hasTestCaseId=${test.hasTestCaseId} (type: ${typeof test.hasTestCaseId}), adoId=${test.adoId || 'null'}, willInclude=${!hasId}`);
+          return !hasId;
+        })
+        .map(test => ({
+          name: test.name,
+          hasTestCaseId: false,
+          code: test.code || ''
+        }));
+
+      console.log(`DEBUG: Found ${testsWithoutIds.length} test methods without IDs out of ${allTests.length} total tests`);
+      return testsWithoutIds;
+    } catch (error) {
+      console.error(`Error parsing test methods for ${path.basename(filePath)}: ${error.message}`);
+      console.error(`Error stack: ${error.stack}`);
+      return [];
     }
-    
-    return {
-      className: className,
-      tests: tests
-    };
   }
 
-  extractMethodCode(content, startIndex) {
-    let braceCount = 0;
-    let inMethod = false;
-    let methodCode = '';
-    
-    for (let i = startIndex; i < content.length; i++) {
-      const char = content[i];
-      methodCode += char;
+  async analyzeTestFile(content, testPropertyName, filePath) {
+    try {
+      const response = await this.callRoslynParser(filePath, content, testPropertyName);
       
-      if (char === '{') {
-        braceCount++;
-        inMethod = true;
-      } else if (char === '}') {
-        braceCount--;
-        if (inMethod && braceCount === 0) {
-          break;
-        }
+      if (response.error) {
+        console.error(`Roslyn parser error: ${response.error}`);
+        return { className: null, tests: [] };
       }
-    }
-    
-    return methodCode.trim();
-  }
 
-  /**
-   * Remove comments from C# code to avoid parsing commented out test attributes
-   * Handles both single-line (//) and multi-line comments
-   */
-  removeComments(content) {
-    let result = '';
-    let i = 0;
-    const len = content.length;
-    
-    while (i < len) {
-      // Check for single-line comment
-      if (i < len - 1 && content[i] === '/' && content[i + 1] === '/') {
-        // Skip to end of line
-        while (i < len && content[i] !== '\n') {
-          i++;
-        }
-        // Keep the newline
-        if (i < len && content[i] === '\n') {
-          result += '\n';
-          i++;
-        }
-      }
-      // Check for multi-line comment
-      else if (i < len - 1 && content[i] === '/' && content[i + 1] === '*') {
-        // Skip to end of comment
-        i += 2;
-        while (i < len - 1) {
-          if (content[i] === '*' && content[i + 1] === '/') {
-            i += 2;
-            break;
-          }
-          // Preserve newlines to maintain line numbers
-          if (content[i] === '\n') {
-            result += '\n';
-          }
-          i++;
-        }
-      }
-      // Check for string literals to avoid removing // or /* inside strings
-      else if (content[i] === '"') {
-        result += content[i];
-        i++;
-        // Skip to end of string, handling escaped quotes
-        while (i < len) {
-          if (content[i] === '\\' && i < len - 1) {
-            result += content[i] + content[i + 1];
-            i += 2;
-          } else if (content[i] === '"') {
-            result += content[i];
-            i++;
-            break;
-          } else {
-            result += content[i];
-            i++;
-          }
-        }
-      }
-      // Check for character literals
-      else if (content[i] === "'") {
-        result += content[i];
-        i++;
-        // Skip to end of character, handling escaped characters
-        while (i < len) {
-          if (content[i] === '\\' && i < len - 1) {
-            result += content[i] + content[i + 1];
-            i += 2;
-          } else if (content[i] === "'") {
-            result += content[i];
-            i++;
-            break;
-          } else {
-            result += content[i];
-            i++;
-          }
-        }
-      }
-      // Regular character
-      else {
-        result += content[i];
-        i++;
-      }
+      return {
+        className: response.className || null,
+        tests: response.tests || []
+      };
+    } catch (error) {
+      console.error(`Error analyzing test file: ${error.message}`);
+      return { className: null, tests: [] };
     }
-    
-    return result;
   }
 }
 
