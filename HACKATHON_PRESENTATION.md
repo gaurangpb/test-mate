@@ -42,7 +42,7 @@ TestMate is an intelligent automation tool that scans C# NUnit test files, uses 
 
 **Innovation/Differentiator:**
 
-- **AI-Powered Understanding**: Unlike template-based tools, TestMate uses GPT-4o to understand test intent and generate contextually appropriate documentation
+- **AI-Powered Understanding**: Unlike template-based tools, TestMate uses gpt-4o-mini to understand test intent and generate contextually appropriate documentation
 - **Domain Context Awareness**: Optional domain context files enable the AI to use your business terminology and workflows
 - **Bidirectional Sync**: Not just one-way documentation—updates flow both ways between code and Azure DevOps
 - **Zero Manual Workflow**: Complete automation from code scan to ADO test case creation
