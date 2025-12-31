@@ -10,12 +10,13 @@ router.post('/generate', async (req, res) => {
   const { openaiService, fileUtils } = req.app.locals;
   
   try {
-    const { tests, domainContextPath } = req.body;
+    const { tests, domainContextPath, repoPath } = req.body;
     
     console.log('Generate endpoint called with:', { 
       testsCount: tests?.length, 
       tests: tests?.map(t => ({ name: t.name, codeLength: t.code?.length })),
-      domainContextPath: domainContextPath || 'none'
+      domainContextPath: domainContextPath || 'none',
+      repoPath: repoPath || 'none'
     });
     
     if (!openaiService.isConfigured()) {
@@ -36,6 +37,21 @@ router.post('/generate', async (req, res) => {
       }
     }
 
+    // Load style guide if repoPath is provided
+    let styleGuide = null;
+    if (repoPath) {
+      try {
+        const styleGuideLoader = require('../utils/styleGuideLoader');
+        styleGuide = await styleGuideLoader.loadStyleGuide(repoPath);
+        if (styleGuide) {
+          console.log(`Style guide loaded from repo: ${repoPath}`);
+        }
+      } catch (styleGuideError) {
+        console.warn(`Failed to load style guide: ${styleGuideError.message}`);
+        // Continue without style guide rather than failing
+      }
+    }
+
     // Read domain context if provided
     let domainContext = null;
     if (domainContextPath) {
@@ -52,9 +68,12 @@ router.post('/generate', async (req, res) => {
       }
     }
 
-    console.log(`Processing ${tests.length} test(s) for documentation generation${domainContext ? ' with domain context' : ''}`);
+    const contextInfo = [];
+    if (domainContext) contextInfo.push('domain context');
+    if (styleGuide) contextInfo.push('style guide');
+    console.log(`Processing ${tests.length} test(s) for documentation generation${contextInfo.length > 0 ? ' with ' + contextInfo.join(' and ') : ''}`);
 
-    const generatedDocs = await openaiService.generateDocumentationForTests(tests, domainContext);
+    const generatedDocs = await openaiService.generateDocumentationForTests(tests, domainContext, styleGuide);
 
     console.log(`Documentation generation completed. Generated docs for ${Object.keys(generatedDocs).length} tests`);
     res.json({ 
