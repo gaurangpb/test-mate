@@ -27,13 +27,13 @@ class OpenAIService {
     return this.client !== null;
   }
 
-  async generateDocumentationForTests(tests, domainContext = null) {
+  async generateDocumentationForTests(tests, domainContext = null, styleGuide = null) {
     const documentationResults = [];
     
     for (const test of tests) {
       try {
         console.log(`Generating documentation for: ${test.name}`);
-        const docs = await this.generateDocumentation(test, domainContext);
+        const docs = await this.generateDocumentation(test, domainContext, styleGuide);
         documentationResults.push({ name: test.name, docs });
         console.log(`Successfully generated documentation for: ${test.name}`);
       } catch (error) {
@@ -61,10 +61,13 @@ class OpenAIService {
     return generatedDocs;
   }
 
-  async generateDocumentation(test, domainContext = null) {
+  async generateDocumentation(test, domainContext = null, styleGuide = null) {
     if (!this.client) {
       throw new Error('OpenAI client not configured');
     }
+
+    // Import style guide loader
+    const styleGuideLoader = require('../utils/styleGuideLoader');
 
     // Build prompt with optional domain context
     let prompt = `You are a QA documentation expert. Analyze this automated test code and generate comprehensive test documentation.`;
@@ -74,26 +77,40 @@ class OpenAIService {
       prompt += `\n\n=== APPLICATION DOMAIN CONTEXT ===\nThe following information describes the application's domain, features, workflows, and terminology. Use this context to generate more accurate, domain-specific test documentation:\n\n${domainContext}\n\n=== END DOMAIN CONTEXT ===\n`;
     }
 
+    // Add style guide instructions if provided
+    if (styleGuide) {
+      prompt += styleGuideLoader.buildStyleGuideInstructions(styleGuide);
+    }
+
     prompt += `\nTest Method Name: ${test.name}\n\nTest Code:\n\`\`\`csharp\n${test.code}\n\`\`\`\n\nPlease provide:\n\n1. A narrative description (2-3 sentences) explaining what business scenario this test validates. Focus on the user perspective and business value, not technical implementation details.`;
 
-    if (domainContext) {
+    // Domain context guidance (only if no style guide covers this)
+    if (domainContext && (!styleGuide || !styleGuide.terminology)) {
       prompt += ` Use the domain context provided above to ensure the description uses correct domain terminology and reflects actual user workflows.`;
     }
 
-    prompt += `\n\n2. Detailed test steps in the format of Action and Expected Result pairs. Each step should be clear and testable. Include steps for setup, execution, and verification.`;
+    prompt += `\n\n2. Detailed test steps in the format of Action and Expected Result pairs. Each step should be clear and testable.`;
 
-    if (domainContext) {
-      prompt += ` Reference the domain context to ensure steps align with actual application workflows and use proper domain terminology.`;
+    // Structure guidance (only if style guide doesn't specify)
+    if (!styleGuide || !styleGuide.structure) {
+      prompt += ` Include steps for setup, execution, and verification.`;
     }
 
-    prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "description": "Your narrative description here",\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:\n- Make the description business-focused and user-centric`;
+    // Step count guidance (only if style guide doesn't specify)
+    if (!styleGuide || !styleGuide.formatting || !styleGuide.formatting.minStepsPerTest) {
+      prompt += ` Number of steps should match the logical flow of the test (typically 3-7 steps).`;
+    }
 
+    prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "description": "Your narrative description here",\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:`;
+
+    // Only add domain context reminders if provided (style guide already covers terminology)
     if (domainContext) {
       prompt += `\n- Use domain-specific terminology from the context provided above`;
       prompt += `\n- Ensure test steps reflect actual user journeys and workflows described in the context`;
     }
 
-    prompt += `\n- Steps should be clear enough for manual testing if needed\n- Include verification steps based on assertions in the code\n- Keep technical jargon minimal in the description\n- Number of steps should match the logical flow of the test (typically 3-7 steps)`;
+    // General guidelines (style guide already covers formatting specifics)
+    prompt += `\n- Steps should be clear enough for manual testing if needed`;
 
     try {
       console.log(`Generating documentation for test: ${test.name}`);
@@ -157,19 +174,27 @@ class OpenAIService {
 
   /**
    * Generate steps for a test case, merging with existing steps
-   * @param {Object} params - { testCode, existingSteps, testName, domainContext }
+   * @param {Object} params - { testCode, existingSteps, testName, domainContext, styleGuide }
    * @returns {Promise<Array>} - Array of steps with action and expectedResult
    */
-  async generateStepsForTest({ testCode, existingSteps = [], testName, domainContext = null }) {
+  async generateStepsForTest({ testCode, existingSteps = [], testName, domainContext = null, styleGuide = null }) {
     if (!this.client) {
       throw new Error('OpenAI client not configured');
     }
+
+    // Import style guide loader
+    const styleGuideLoader = require('../utils/styleGuideLoader');
 
     let prompt = `You are a QA documentation expert. Analyze this automated test code and generate or update test steps.`;
 
     // Add domain context if provided
     if (domainContext) {
       prompt += `\n\n=== APPLICATION DOMAIN CONTEXT ===\n${domainContext}\n=== END DOMAIN CONTEXT ===\n`;
+    }
+
+    // Add style guide instructions if provided
+    if (styleGuide) {
+      prompt += styleGuideLoader.buildStyleGuideInstructions(styleGuide);
     }
 
     prompt += `\nTest Method Name: ${testName || 'Test'}\n\nTest Code:\n\`\`\`csharp\n${testCode}\n\`\`\`\n\n`;
@@ -188,11 +213,34 @@ class OpenAIService {
       prompt += `5. Keep steps that are still accurate, update steps that need changes, add missing steps, remove obsolete steps\n`;
     } else {
       prompt += `Generate detailed test steps in the format of Action and Expected Result pairs. `;
-      prompt += `Each step should be clear and testable. Include steps for setup, execution, and verification.`;
+      prompt += `Each step should be clear and testable.`;
+      
+      if (styleGuide && styleGuide.structure) {
+        if (styleGuide.structure.includeSetupSteps) {
+          prompt += ` Include setup steps.`;
+        }
+        if (styleGuide.structure.includeTeardownSteps) {
+          prompt += ` Include teardown steps.`;
+        }
+        if (styleGuide.structure.verificationRequired) {
+          prompt += ` Include verification steps.`;
+        }
+      } else {
+        prompt += ` Include steps for setup, execution, and verification.`;
+      }
     }
 
     if (domainContext) {
       prompt += `\n\nUse the domain context provided above to ensure steps use correct domain terminology and reflect actual user workflows.`;
+    }
+
+    if (styleGuide && styleGuide.terminology) {
+      if (styleGuide.terminology.preference === 'business') {
+        prompt += ` Use business-focused language and avoid technical jargon.`;
+      }
+      if (styleGuide.terminology.domainSpecificTerms && styleGuide.terminology.domainSpecificTerms.length > 0) {
+        prompt += ` Use these domain-specific terms: ${styleGuide.terminology.domainSpecificTerms.join(', ')}.`;
+      }
     }
 
     prompt += `\n\nReturn your response in this exact JSON format:\n{\n  "steps": [\n    {\n      "action": "Action description",\n      "expectedResult": "Expected result description"\n    }\n  ]\n}\n\nImportant guidelines:\n`;
@@ -200,9 +248,26 @@ class OpenAIService {
       prompt += `- Use domain-specific terminology from the context provided\n`;
       prompt += `- Ensure test steps reflect actual user journeys and workflows described in the context\n`;
     }
+    
+    if (styleGuide && styleGuide.formatting) {
+      if (styleGuide.formatting.actionFormat === 'imperative') {
+        prompt += `- Write actions in imperative mood (e.g., "Navigate to...", "Click on...", "Enter...")\n`;
+      }
+      if (styleGuide.examples && styleGuide.examples.goodAction) {
+        prompt += `- Follow this example for good actions: "${styleGuide.examples.goodAction}"\n`;
+      }
+      if (styleGuide.examples && styleGuide.examples.badAction) {
+        prompt += `- Avoid actions like: "${styleGuide.examples.badAction}"\n`;
+      }
+      const minSteps = styleGuide.formatting.minStepsPerTest || 3;
+      const maxSteps = styleGuide.formatting.maxStepsPerTest || 10;
+      prompt += `- Generate between ${minSteps} and ${maxSteps} steps\n`;
+    } else {
+      prompt += `- Number of steps should match the logical flow of the test (typically 3-7 steps)\n`;
+    }
+    
     prompt += `- Steps should be clear enough for manual testing if needed\n`;
     prompt += `- Include verification steps based on assertions in the code\n`;
-    prompt += `- Number of steps should match the logical flow of the test (typically 3-7 steps)\n`;
     if (existingSteps && existingSteps.length > 0) {
       prompt += `- Preserve the intent of existing steps that are still accurate\n`;
       prompt += `- Only change steps that need updates based on the actual test code\n`;

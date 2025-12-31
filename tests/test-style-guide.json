@@ -1,0 +1,33 @@
+{
+  "formatting": {
+    "actionFormat": "imperative",
+    "expectedResultFormat": "declarative",
+    "stepGranularity": "medium",
+    "maxStepsPerTest": 10,
+    "minStepsPerTest": 3
+  },
+  "terminology": {
+    "preference": "business",
+    "technicalTermsAllowed": false,
+    "domainSpecificTerms": [
+      "account",
+      "transaction",
+      "balance",
+      "transfer",
+      "deposit",
+      "withdrawal",
+      "loan",
+      "payment"
+    ]
+  },
+  "structure": {
+    "includeSetupSteps": true,
+    "includeTeardownSteps": false,
+    "verificationRequired": true
+  },
+  "examples": {
+    "goodAction": "Navigate to the account summary page",
+    "badAction": "Call the getAccountSummary() method"
+  }
+}
+

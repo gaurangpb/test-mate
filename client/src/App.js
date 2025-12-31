@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag, Lightbulb, Plus, Folder, File, ChevronRight, ChevronDown, X, Save } from 'lucide-react';
+import { FileText, Settings, Play, Download, CheckCircle, AlertCircle, Loader2, Check, BarChart3, Tag, Lightbulb, Plus, Folder, File, ChevronRight, ChevronDown, X, Save, Code, ExternalLink } from 'lucide-react';
 
 const API_BASE_URL = 'http://localhost:3001/api';
 const USE_MOCK = process.env.REACT_APP_USE_MOCK === 'true';
@@ -297,6 +297,14 @@ export default function App() {
   const [selectedForAdo, setSelectedForAdo] = useState(new Set()); // Tests selected for ADO creation
   const [selectedForFileWrite, setSelectedForFileWrite] = useState(new Set()); // Tests selected for file write-back
   const [writtenToFiles, setWrittenToFiles] = useState(new Set()); // Track which tests have been written to files
+  
+  // Agentic Workflow State
+  const [workflowId, setWorkflowId] = useState(null);
+  const [workflowStatus, setWorkflowStatus] = useState(null);
+  const [workflowPolling, setWorkflowPolling] = useState(false);
+  const [checkpointModal, setCheckpointModal] = useState(null); // { id, title, data, type }
+  const [workflowHistory, setWorkflowHistory] = useState([]);
+  const [selectedTestsForWorkflow, setSelectedTestsForWorkflow] = useState(new Set());
   const [testAnalysisData, setTestAnalysisData] = useState(null); // Test analysis results
   const [isLoadingAnalysis, setIsLoadingAnalysis] = useState(false);
   const [analysisMode, setAnalysisMode] = useState('plan'); // 'plan' or 'bug'
@@ -706,7 +714,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           tests: testsToGenerate,
-          domainContextPath: config.domainContextPath || null
+          domainContextPath: config.domainContextPath || null,
+          repoPath: config.repoPath || null
         })
       });
 
@@ -1424,6 +1433,313 @@ export default function App() {
     }
   };
 
+  // Agentic Workflow API Functions
+  const initializeWorkflow = async () => {
+    if (!config.repoPath) {
+      setError('Please enter a repository path');
+      return;
+    }
+
+    // Note: selectedTestsForWorkflow is optional - workflow will scan and pause at test_selection checkpoint
+    // if no tests are pre-selected. If tests are selected, they'll be passed to the workflow.
+
+    setError(null);
+    setSuccessMessage(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/initialize`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          repoPath: config.repoPath,
+          testPropertyName: config.testPropertyName,
+          checkpointMode: 'interactive'
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to initialize workflow');
+        throw new Error(errorMessage);
+      }
+
+      const data = await response.json();
+      setWorkflowId(data.workflowId);
+      setSuccessMessage('Workflow initialized successfully');
+      
+      // Start workflow execution
+      await executeWorkflow(data.workflowId);
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const executeWorkflow = async (id) => {
+    const workflowIdToUse = id || workflowId;
+    if (!workflowIdToUse) {
+      setError('No workflow ID available');
+      return;
+    }
+
+    setError(null);
+    setWorkflowPolling(true);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/${workflowIdToUse}/execute`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          goal: 'Document selected tests using agentic workflow'
+        })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to execute workflow');
+        throw new Error(errorMessage);
+      }
+
+      // Start polling for status
+      pollWorkflowStatus(workflowIdToUse);
+    } catch (err) {
+      setError(err.message);
+      setWorkflowPolling(false);
+    }
+  };
+
+  const pollWorkflowStatus = async (id) => {
+    const workflowIdToUse = id || workflowId;
+    if (!workflowIdToUse || !workflowPolling) return;
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/${workflowIdToUse}/status`);
+      if (!response.ok) {
+        throw new Error('Failed to get workflow status');
+      }
+
+      const data = await response.json();
+      setWorkflowStatus(data.state);
+
+      // Check if workflow is paused at a checkpoint
+      if (data.state.status === 'paused' && data.state.checkpoints) {
+        const latestCheckpoint = data.state.checkpoints[data.state.checkpoints.length - 1];
+        if (latestCheckpoint.status === 'pending') {
+          setCheckpointModal({
+            id: latestCheckpoint.id,
+            title: latestCheckpoint.title,
+            description: latestCheckpoint.description,
+            data: latestCheckpoint.data,
+            type: latestCheckpoint.id
+          });
+          setWorkflowPolling(false);
+          return;
+        }
+      }
+
+      // Stop polling if workflow is completed, error, or cancelled
+      if (['completed', 'error', 'cancelled'].includes(data.state.status)) {
+        setWorkflowPolling(false);
+        if (data.state.status === 'completed') {
+          setSuccessMessage('Workflow completed successfully!');
+        }
+        return;
+      }
+    } catch (err) {
+      console.error('Error polling workflow status:', err);
+      setWorkflowPolling(false);
+      setError('Failed to poll workflow status');
+    }
+  };
+
+  const approveCheckpoint = async (checkpointId, approvalData) => {
+    if (!workflowId) {
+      setError('No workflow ID available');
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/${workflowId}/checkpoint/${checkpointId}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(approvalData)
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to approve checkpoint');
+        throw new Error(errorMessage);
+      }
+
+      setCheckpointModal(null);
+      setWorkflowPolling(true);
+      
+      // Resume polling will happen via useEffect
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const rejectCheckpoint = async (checkpointId, reason) => {
+    if (!workflowId) {
+      setError('No workflow ID available');
+      return;
+    }
+
+    setError(null);
+
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/${workflowId}/checkpoint/${checkpointId}/reject`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason })
+      });
+
+      if (!response.ok) {
+        const errorMessage = await parseErrorResponse(response, 'Failed to reject checkpoint');
+        throw new Error(errorMessage);
+      }
+
+      setCheckpointModal(null);
+      setWorkflowPolling(false);
+      setError('Workflow cancelled by user');
+    } catch (err) {
+      setError(err.message);
+    }
+  };
+
+  const loadWorkflowHistory = async () => {
+    try {
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflows`);
+      if (!response.ok) {
+        throw new Error('Failed to load workflow history');
+      }
+
+      const data = await response.json();
+      setWorkflowHistory(data.workflows || []);
+    } catch (err) {
+      console.error('Error loading workflow history:', err);
+    }
+  };
+
+  const loadWorkflowById = async (workflowIdToLoad) => {
+    if (!workflowIdToLoad) {
+      console.warn('No workflow ID provided to loadWorkflowById');
+      return;
+    }
+
+    try {
+      // Switch to agentic tab first so user can see the workflow
+      setActiveTab('agentic');
+      
+      // Clear any previous errors
+      setError(null);
+      
+      // Set the workflow ID
+      setWorkflowId(workflowIdToLoad);
+      
+      // Load workflow status
+      const response = await apiFetch(`${API_BASE_URL}/agent/workflow/${workflowIdToLoad}/status`);
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`Failed to load workflow status: ${response.status} ${errorText}`);
+      }
+
+      const data = await response.json();
+      
+      if (!data || !data.state) {
+        throw new Error('Invalid workflow data received');
+      }
+
+      setWorkflowStatus(data.state);
+
+      // Enable polling if workflow is still running
+      if (data.state.status === 'running' || data.state.status === 'paused') {
+        setWorkflowPolling(true);
+      } else {
+        setWorkflowPolling(false);
+      }
+
+      // Check if workflow is paused at a checkpoint
+      if (data.state.status === 'paused' && data.state.checkpoints) {
+        const latestCheckpoint = data.state.checkpoints[data.state.checkpoints.length - 1];
+        if (latestCheckpoint.status === 'pending') {
+          setCheckpointModal({
+            id: latestCheckpoint.id,
+            title: latestCheckpoint.title,
+            description: latestCheckpoint.description,
+            data: latestCheckpoint.data,
+            type: latestCheckpoint.id
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Error loading workflow details:', err);
+      setError(`Failed to load workflow: ${err.message}`);
+      setWorkflowStatus(null);
+      setWorkflowPolling(false);
+    }
+  };
+
+  const openWorkflowJson = (workflowIdToOpen, event) => {
+    if (event) {
+      event.stopPropagation(); // Prevent triggering the parent click handler
+    }
+    const jsonUrl = `${API_BASE_URL}/agent/workflow/${workflowIdToOpen}/status`;
+    window.open(jsonUrl, '_blank');
+  };
+
+  const handleWorkflowHistoryClick = async (clickedWorkflowId, event) => {
+    // If Ctrl/Cmd+Click, open in new tab
+    if (event && (event.ctrlKey || event.metaKey)) {
+      const url = `${window.location.origin}${window.location.pathname}?workflow=${clickedWorkflowId}`;
+      window.open(url, '_blank');
+      return;
+    }
+
+    // Update URL without reloading
+    const url = new URL(window.location);
+    url.searchParams.set('workflow', clickedWorkflowId);
+    window.history.pushState({ workflowId: clickedWorkflowId }, '', url);
+    
+    // Load the workflow (this will switch to agentic tab)
+    await loadWorkflowById(clickedWorkflowId);
+  };
+
+  // Poll workflow status when polling is enabled
+  useEffect(() => {
+    if (workflowPolling && workflowId) {
+      const interval = setInterval(() => {
+        pollWorkflowStatus(workflowId);
+      }, 2000);
+
+      return () => clearInterval(interval);
+    }
+  }, [workflowPolling, workflowId]);
+
+  // Load workflow from URL parameter on page load and handle URL changes
+  useEffect(() => {
+    const loadWorkflowFromUrl = async () => {
+      const urlParams = new URLSearchParams(window.location.search);
+      const workflowParam = urlParams.get('workflow');
+      if (workflowParam) {
+        await loadWorkflowById(workflowParam);
+      }
+    };
+
+    // Load on mount
+    loadWorkflowFromUrl();
+
+    // Listen for browser back/forward navigation
+    const handlePopState = () => {
+      loadWorkflowFromUrl();
+    };
+    window.addEventListener('popstate', handlePopState);
+
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount for initial load
+
   const hasChanges = (testCaseId) => {
     const original = testCaseDetails[testCaseId];
     const edited = editedTestCaseData[testCaseId];
@@ -1645,6 +1961,17 @@ export default function App() {
               >
                 <FileText className="w-4 h-4 inline mr-2" />
                 Update Tests in ADO
+              </button>
+              <button
+                onClick={() => setActiveTab('agentic')}
+                className={`px-6 py-3 font-medium text-sm border-b-2 transition-colors ${
+                  activeTab === 'agentic'
+                    ? 'border-blue-600 text-blue-600'
+                    : 'border-transparent text-gray-500 hover:text-gray-700'
+                }`}
+              >
+                <Play className="w-4 h-4 inline mr-2" />
+                Agentic Workflow
               </button>
             </nav>
           </div>
@@ -3276,6 +3603,270 @@ export default function App() {
               </div>
             )}
 
+            {/* Agentic Workflow Tab */}
+            {activeTab === 'agentic' && (
+              <div className="space-y-6">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Agentic Workflow</h2>
+                    <p className="text-sm text-gray-600 mt-1">Select tests and let the agent handle the full documentation workflow</p>
+                  </div>
+                  {!workflowId ? (
+                    <button
+                      onClick={initializeWorkflow}
+                      disabled={!config.repoPath}
+                      className="flex items-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                      title={!config.repoPath ? "Please configure repository path first" : "Start agentic workflow (will scan for tests automatically)"}
+                    >
+                      <Play className="w-4 h-4" />
+                      Start Workflow
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => {
+                        // Clear workflow state
+                        setWorkflowId(null);
+                        setWorkflowStatus(null);
+                        setWorkflowPolling(false);
+                        setCheckpointModal(null);
+                        setSelectedTestsForWorkflow(new Set());
+                        
+                        // Clear URL parameter
+                        const url = new URL(window.location);
+                        url.searchParams.delete('workflow');
+                        window.history.pushState({}, '', url);
+                      }}
+                      className="flex items-center gap-2 px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 font-medium transition-colors"
+                    >
+                      <Plus className="w-4 h-4" />
+                      New Workflow
+                    </button>
+                  )}
+                </div>
+
+                {/* Test Selection Panel */}
+                {!workflowId && scanResults && scanResults.length > 0 && (
+                  <div className="border border-gray-200 rounded-lg p-6">
+                    <h3 className="text-lg font-semibold text-gray-900 mb-4">Select Tests to Document</h3>
+                    <div className="space-y-3 max-h-96 overflow-y-auto">
+                      {scanResults.map((file) => (
+                        <div key={file.filePath} className="border border-gray-200 rounded-lg p-4">
+                          <div className="font-medium text-gray-900 mb-2">{file.fileName}</div>
+                          <div className="space-y-2">
+                            {file.testMethods.map((test) => {
+                              const testKey = `${file.filePath}|${test.name}`;
+                              const isSelected = selectedTestsForWorkflow.has(testKey);
+                              return (
+                                <label key={testKey} className="flex items-center gap-2 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={isSelected}
+                                    onChange={(e) => {
+                                      const newSet = new Set(selectedTestsForWorkflow);
+                                      if (e.target.checked) {
+                                        newSet.add(testKey);
+                                      } else {
+                                        newSet.delete(testKey);
+                                      }
+                                      setSelectedTestsForWorkflow(newSet);
+                                    }}
+                                    className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500"
+                                  />
+                                  <span className="text-sm text-gray-700">{test.name}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="mt-4 flex items-center justify-between">
+                      <span className="text-sm text-gray-600">
+                        {selectedTestsForWorkflow.size} test(s) selected
+                      </span>
+                      <button
+                        onClick={initializeWorkflow}
+                        disabled={selectedTestsForWorkflow.size === 0}
+                        className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                      >
+                        Start Workflow
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Workflow Status */}
+                {workflowId && workflowStatus && (
+                  <div className="border border-gray-200 rounded-lg p-6">
+                    <div className="flex items-center justify-between mb-4">
+                      <h3 className="text-lg font-semibold text-gray-900">Workflow Status</h3>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => openWorkflowJson(workflowId)}
+                          className="flex items-center gap-1 px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                          title="View JSON in new tab"
+                        >
+                          <Code className="w-4 h-4" />
+                          View JSON
+                        </button>
+                        {workflowPolling && (
+                          <Loader2 className="w-4 h-4 animate-spin text-blue-600" />
+                        )}
+                        <span className={`text-sm font-medium ${
+                          workflowStatus.status === 'completed' ? 'text-green-600' :
+                          workflowStatus.status === 'error' ? 'text-red-600' :
+                          workflowStatus.status === 'paused' ? 'text-yellow-600' :
+                          'text-blue-600'
+                        }`}>
+                          {workflowStatus.status?.toUpperCase() || 'UNKNOWN'}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Progress */}
+                    <div className="mb-4">
+                      <div className="flex items-center justify-between text-sm text-gray-600 mb-2">
+                        <span>Progress</span>
+                        <span>{workflowStatus.progress || 0} / {workflowStatus.totalSteps || 0} steps</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div
+                          className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                          style={{
+                            width: `${workflowStatus.totalSteps > 0 ? (workflowStatus.progress / workflowStatus.totalSteps) * 100 : 0}%`
+                          }}
+                        />
+                      </div>
+                    </div>
+
+                    {/* Current Step */}
+                    {workflowStatus.currentStep && (
+                      <div className="mb-4">
+                        <span className="text-sm text-gray-600">Current Step: </span>
+                        <span className="text-sm font-medium text-gray-900 capitalize">
+                          {workflowStatus.currentStep}
+                        </span>
+                      </div>
+                    )}
+
+                    {/* Results Summary */}
+                    {workflowStatus.results && (
+                      <div className="mt-4 space-y-2">
+                        <h4 className="text-sm font-semibold text-gray-900">Results:</h4>
+                        {workflowStatus.results.scan && (
+                          <div className="text-sm text-gray-600">
+                            Scanned: {workflowStatus.results.scan.testCount || 0} tests
+                          </div>
+                        )}
+                        {workflowStatus.results.generate && (
+                          <div className="text-sm text-gray-600">
+                            Generated docs: {workflowStatus.results.generate.testCount || 0} tests
+                          </div>
+                        )}
+                        {workflowStatus.results.sync && (
+                          <div className="text-sm text-gray-600">
+                            Synced to ADO: {workflowStatus.results.sync.successful || 0} successful
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Tests and ADO IDs */}
+                    {workflowStatus.workflowState?.syncStatus?.results && 
+                     workflowStatus.workflowState.syncStatus.results.filter(r => r.success && r.testCaseId).length > 0 && (
+                      <div className="mt-4 pt-4 border-t border-gray-200">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-3">Updated Tests & ADO IDs:</h4>
+                        <div className="space-y-2">
+                          {workflowStatus.workflowState.syncStatus.results
+                            .filter(r => r.success && r.testCaseId)
+                            .map((result, index) => (
+                              <div key={index} className="flex items-center justify-between p-2 bg-gray-50 rounded-lg">
+                                <div className="flex-1">
+                                  <div className="text-sm font-medium text-gray-900">
+                                    {result.testName}
+                                  </div>
+                                  {result.fileName && (
+                                    <div className="text-xs text-gray-500">
+                                      {result.fileName}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="ml-4">
+                                  <span className="text-xs font-medium text-blue-600 bg-blue-50 px-2 py-1 rounded">
+                                    ADO ID: {result.testCaseId}
+                                  </span>
+                                </div>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Generated Tests (if no ADO sync yet) */}
+                    {workflowStatus.workflowState?.generatedDocs && 
+                     Object.keys(workflowStatus.workflowState.generatedDocs).length > 0 &&
+                     (!workflowStatus.workflowState?.syncStatus?.results || 
+                      workflowStatus.workflowState.syncStatus.results.filter(r => r.success && r.testCaseId).length === 0) && (
+                      <div className="mt-4 pt-4 border-t border-gray-200">
+                        <h4 className="text-sm font-semibold text-gray-900 mb-3">Generated Tests:</h4>
+                        <div className="space-y-1">
+                          {Object.keys(workflowStatus.workflowState.generatedDocs).map((testName, index) => (
+                            <div key={index} className="text-sm text-gray-700 p-2 bg-gray-50 rounded">
+                              {testName}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Workflow History */}
+                <div className="border border-gray-200 rounded-lg p-6">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="text-lg font-semibold text-gray-900">Workflow History</h3>
+                    <button
+                      onClick={loadWorkflowHistory}
+                      className="text-sm text-blue-600 hover:text-blue-700 font-medium"
+                    >
+                      Refresh
+                    </button>
+                  </div>
+                  {workflowHistory.length === 0 ? (
+                    <p className="text-sm text-gray-500">No workflow history yet</p>
+                  ) : (
+                    <div className="space-y-2">
+                      {workflowHistory.slice(0, 10).map((workflow) => (
+                        <div 
+                          key={workflow.workflowId} 
+                          onClick={(e) => handleWorkflowHistoryClick(workflow.workflowId, e)}
+                          className="flex items-center justify-between p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50 hover:border-blue-300 transition-colors"
+                          title="Click to view | Ctrl+Click to open in new tab"
+                        >
+                          <div className="flex-1">
+                            <div className="text-sm font-medium text-blue-600 hover:text-blue-700">
+                              {workflow.workflowId}
+                            </div>
+                            <div className="text-xs text-gray-500">
+                              {new Date(workflow.updatedAt).toLocaleString()}
+                            </div>
+                          </div>
+                          <span className={`text-xs font-medium px-2 py-1 rounded ${
+                            workflow.status === 'completed' ? 'bg-green-100 text-green-800' :
+                            workflow.status === 'error' ? 'bg-red-100 text-red-800' :
+                            workflow.status === 'running' ? 'bg-blue-100 text-blue-800' :
+                            'bg-gray-100 text-gray-800'
+                          }`}>
+                            {workflow.status}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Update Tests in ADO Tab */}
             {activeTab === 'update-ado' && updateScanResults && (
               <div className="space-y-6">
@@ -3515,6 +4106,152 @@ export default function App() {
           </div>
         </div>
       </div>
+
+      {/* Checkpoint Approval Modal */}
+      {checkpointModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-4xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-bold text-gray-900">{checkpointModal.title}</h3>
+                <button
+                  onClick={() => setCheckpointModal(null)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+              {checkpointModal.description && (
+                <p className="text-sm text-gray-600 mt-2">{checkpointModal.description}</p>
+              )}
+            </div>
+
+            <div className="p-6">
+              {/* Test Selection Checkpoint */}
+              {checkpointModal.type === 'test_selection' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600 mb-4">Select tests to document:</p>
+                  <div className="space-y-2 max-h-96 overflow-y-auto">
+                    {(checkpointModal.data || []).map((test, idx) => {
+                      const testKey = `${test.filePath}|${test.name}`;
+                      const isSelected = selectedTestsForWorkflow.has(testKey);
+                      return (
+                        <label key={idx} className="flex items-start gap-3 p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50">
+                          <input
+                            type="checkbox"
+                            checked={isSelected}
+                            onChange={(e) => {
+                              const newSet = new Set(selectedTestsForWorkflow);
+                              if (e.target.checked) {
+                                newSet.add(testKey);
+                              } else {
+                                newSet.delete(testKey);
+                              }
+                              setSelectedTestsForWorkflow(newSet);
+                            }}
+                            className="w-4 h-4 text-blue-600 rounded focus:ring-blue-500 mt-1"
+                          />
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-900">{test.name}</div>
+                            <div className="text-xs text-gray-500 mt-1">{test.fileName}</div>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                    <button
+                      onClick={() => rejectCheckpoint(checkpointModal.id, 'Cancelled by user')}
+                      className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => {
+                        const selectedTests = Array.from(selectedTestsForWorkflow)
+                          .map(key => {
+                            const [filePath, name] = key.split('|');
+                            return checkpointModal.data.find(t => t.filePath === filePath && t.name === name);
+                          })
+                          .filter(Boolean);
+                        approveCheckpoint(checkpointModal.id, { selectedTests });
+                      }}
+                      disabled={selectedTestsForWorkflow.size === 0}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed font-medium transition-colors"
+                    >
+                      Approve Selected ({selectedTestsForWorkflow.size})
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Quality Review Checkpoint */}
+              {checkpointModal.type === 'quality_review' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600 mb-4">Review generated documentation:</p>
+                  <div className="space-y-4 max-h-96 overflow-y-auto">
+                    {Object.entries(checkpointModal.data || {}).map(([testName, doc]) => (
+                      <div key={testName} className="border border-gray-200 rounded-lg p-4">
+                        <div className="font-medium text-gray-900 mb-2">{testName}</div>
+                        <div className="text-sm text-gray-700 mb-3">{doc.description}</div>
+                        <div className="space-y-2">
+                          {doc.steps && doc.steps.map((step, idx) => (
+                            <div key={idx} className="text-sm text-gray-600 pl-4 border-l-2 border-gray-200">
+                              <div className="font-medium">{idx + 1}. {step.action}</div>
+                              <div className="text-gray-500 mt-1">Expected: {step.expectedResult}</div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                    <button
+                      onClick={() => rejectCheckpoint(checkpointModal.id, 'Rejected by user')}
+                      className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                    >
+                      Reject
+                    </button>
+                    <button
+                      onClick={() => approveCheckpoint(checkpointModal.id, { approved: true })}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors"
+                    >
+                      Approve
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* ADO Sync Checkpoint */}
+              {checkpointModal.type === 'ado_sync' && (
+                <div className="space-y-4">
+                  <p className="text-sm text-gray-600 mb-4">Confirm synchronization with Azure DevOps:</p>
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+                    <div className="text-sm text-gray-700">
+                      <div className="font-medium mb-2">Sync Plan:</div>
+                      <div>Test Count: {checkpointModal.data?.testCount || 0}</div>
+                    </div>
+                  </div>
+                  <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+                    <button
+                      onClick={() => rejectCheckpoint(checkpointModal.id, 'Sync cancelled by user')}
+                      className="px-4 py-2 text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 font-medium transition-colors"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      onClick={() => approveCheckpoint(checkpointModal.id, { confirmed: true })}
+                      className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-medium transition-colors"
+                    >
+                      Confirm Sync
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
